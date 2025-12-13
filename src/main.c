@@ -1,5 +1,5 @@
-/* newpaint_enhanced.c - 超級小畫家增強版 */
-/* 基於原始 newpaint.c 擴展，加入多種新功能 */
+/* newpaint_enhanced.c - Super Paint Enhanced Version */
+/* Based on original newpaint.c, with many new features */
 
 #define NULL 0
 #define LINE 1
@@ -45,36 +45,38 @@ void drawRubberCircle(int, int, int, int);
 void saveDrawing(const char*);
 void loadDrawing(const char*);
 void undo(void);
+void redo(void);
 void drawPolygon(void);
 void deleteLastPolygon(void);
 void drawSpray(int, int);
 void drawEraser(int, int);
 void colorPicker(int, int);
 
-/* 全域變數 */
-GLsizei wh = 600, ww = 800; /* 初始視窗大小 */
-GLfloat size = 5.0;         /* 點的大小/橡皮擦大小 */
-int draw_mode = 0;          /* 繪圖模式 */
-int rx, ry;                 /* 游標位置 */
+/* Global Variables */
+GLsizei wh = 600, ww = 800; /* Initial window size */
+GLfloat size = 5.0;         /* Point/Eraser size */
+int draw_mode = 0;          /* Drawing mode */
+int rx, ry;                 /* Cursor position */
 
-GLfloat r = 0.0, g = 0.0, b = 0.0; /* 繪圖顏色 */
-int fill = 0;                      /* 填充標誌 */
-int font_type = 0;                 /* 字型類型: 0=9x15, 1=TIMES, 2=HELVETICA */
-int rubberband = 0;                /* 橡皮筋模式標誌 */
-int start_x, start_y;              /* 橡皮筋起始點 */
-int rubber_x, rubber_y;            /* 橡皮筋當前位置 */
-int polygon_count = 0;             /* 多邊形點數計數 */
-int polygon_points[100][2];        /* 多邊形點陣列 */
-int eraser_mode = 0;               /* 橡皮擦模式 */
-int spray_mode = 0;                /* 噴槍模式 */
-int polygon_mode = 0;              /* 多邊形繪製模式 */
+GLfloat r = 0.0, g = 0.0, b = 0.0; /* Drawing color */
+int fill = 0;                      /* Fill flag */
+int font_type = 0;                 /* Font type: 0=9x15, 1=TIMES, 2=HELVETICA */
+int rubberband = 0;                /* Rubberband mode flag */
+int start_x, start_y;              /* Rubberband start point */
+int rubber_x, rubber_y;            /* Rubberband current position */
+int polygon_count = 0;             /* Polygon point count */
+int polygon_points[100][2];        /* Polygon points array */
+int eraser_mode = 0;               /* Eraser mode */
+int spray_mode = 0;                /* Spray mode */
+int polygon_mode = 0;              /* Polygon drawing mode */
 
-/* 繪製歷史記錄結構 */
-#define MAX_HISTORY 20
+/* Drawing history structure */
+#define MAX_HISTORY 100
 typedef struct {
     int type;
     int x1, y1, x2, y2;
     float r, g, b;
+    float size;
     int filled;
     int points[100][2];
     int point_count;
@@ -82,8 +84,9 @@ typedef struct {
 
 DrawingItem history[MAX_HISTORY];
 int history_count = 0;
+int redo_count = 0;  /* Redo stack count */
 
-/* 繪製正方形 */
+/* Draw square */
 void drawSquare(int x, int y) {
     y = wh - y;
     glColor3f(r, g, b);
@@ -95,7 +98,7 @@ void drawSquare(int x, int y) {
     glEnd();
 }
 
-/* 噴槍效果 */
+/* Spray effect */
 void drawSpray(int x, int y) {
     y = wh - y;
     glColor3f(r, g, b);
@@ -112,10 +115,10 @@ void drawSpray(int x, int y) {
     glPointSize(size);
 }
 
-/* 橡皮擦 */
+/* Eraser */
 void drawEraser(int x, int y) {
     y = wh - y;
-    glColor3f(0.8, 0.8, 0.8);  /* 背景色 */
+    glColor3f(0.8, 0.8, 0.8);  /* Background color */
     glBegin(GL_POLYGON);
     glVertex2f(x + size, y + size);
     glVertex2f(x - size, y + size);
@@ -124,7 +127,7 @@ void drawEraser(int x, int y) {
     glEnd();
 }
 
-/* 橡皮筋矩形 */
+/* Rubberband rectangle */
 void drawRubberRectangle(int x1, int y1, int x2, int y2) {
     y1 = wh - y1;
     y2 = wh - y2;
@@ -145,7 +148,7 @@ void drawRubberRectangle(int x1, int y1, int x2, int y2) {
     glFlush();
 }
 
-/* 橡皮筋圓形 */
+/* Rubberband circle */
 void drawRubberCircle(int x1, int y1, int x2, int y2) {
     y1 = wh - y1;
     y2 = wh - y2;
@@ -168,7 +171,7 @@ void drawRubberCircle(int x1, int y1, int x2, int y2) {
     glFlush();
 }
 
-/* 繪製多邊形 */
+/* Draw polygon */
 void drawPolygon(void) {
     if (polygon_count < 3) return;
     
@@ -184,7 +187,7 @@ void drawPolygon(void) {
     glEnd();
     glFlush();
     
-    /* 儲存到歷史記錄 */
+    /* Save to history */
     if (history_count < MAX_HISTORY) {
         history[history_count].type = POLYGON;
         history[history_count].r = r;
@@ -197,23 +200,24 @@ void drawPolygon(void) {
             history[history_count].points[i][1] = polygon_points[i][1];
         }
         history_count++;
+        redo_count = 0;  /* Clear redo stack */
     }
     
     polygon_count = 0;
 }
 
-/* 刪除最後一個多邊形 */
+/* Delete last polygon */
 void deleteLastPolygon(void) {
-    /* 簡單實現：清除畫布並重繪所有歷史記錄除了最後一個 */
+    /* Simple implementation: clear canvas and redraw all history except last one */
     if (history_count > 0) {
         history_count--;
         glClearColor(0.8, 0.8, 0.8, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
         
-        /* 重繪所有工具列元素 */
+        /* Redraw all toolbar elements */
         display();
         
-        /* 重繪歷史記錄 */
+        /* Redraw history */
         for (int i = 0; i < history_count; i++) {
             glColor3f(history[i].r, history[i].g, history[i].b);
             if (history[i].type == POLYGON) {
@@ -232,33 +236,36 @@ void deleteLastPolygon(void) {
     }
 }
 
-/* 顏色選擇器 */
+/* Color picker */
 void colorPicker(int x, int y) {
-    /* 簡單的顏色選擇器：點擊位置決定RGB值 */
+    /* Simple color picker: click position determines RGB values */
     r = (float)x / ww;
     g = (float)(wh - y) / wh;
     b = 1.0 - (float)(x + y) / (ww + wh);
     
-    /* 確保值在0-1之間 */
+    /* Ensure values are between 0-1 */
     if (r < 0.0) r = 0.0;
     if (r > 1.0) r = 1.0;
     if (g < 0.0) g = 0.0;
     if (g > 1.0) g = 1.0;
     if (b < 0.0) b = 0.0;
     if (b > 1.0) b = 1.0;
+    
+    /* Update color preview immediately */
+    display();
 }
 
-/* 滑鼠移動處理（橡皮筋效果） */
+/* Mouse motion handler (rubberband effect) */
 void motion(int x, int y) {
     if (rubberband) {
-        /* 清除之前的橡皮筋 */
+        /* Clear previous rubberband */
         if (draw_mode == RECTANGLE) {
             drawRubberRectangle(start_x, start_y, rubber_x, rubber_y);
         } else if (draw_mode == CIRCLE) {
             drawRubberCircle(start_x, start_y, rubber_x, rubber_y);
         }
         
-        /* 繪製新的橡皮筋 */
+        /* Draw new rubberband */
         if (draw_mode == RECTANGLE) {
             drawRubberRectangle(start_x, start_y, x, y);
         } else if (draw_mode == CIRCLE) {
@@ -276,7 +283,7 @@ void motion(int x, int y) {
     }
 }
 
-/* 滑鼠事件處理 */
+/* Mouse event handler */
 void mouse(int btn, int state, int x, int y) {
     static int count;
     int where;
@@ -286,13 +293,13 @@ void mouse(int btn, int state, int x, int y) {
         where = pick(x, y);
         
         if (where != 0) {
-            /* 只在模式切換時重置計數器 */
+            /* Only reset counter when switching modes */
             if (draw_mode != where) {
                 count = 0;
                 draw_mode = where;
-                polygon_count = 0;  /* 重置多邊形點數 */
+                polygon_count = 0;  /* Reset polygon point count */
                 
-                /* 設置特殊模式 */
+                /* Set special modes */
                 spray_mode = (where == SPRAY);
                 eraser_mode = (where == ERASER);
                 polygon_mode = (where == POLYGON);
@@ -312,57 +319,29 @@ void mouse(int btn, int state, int x, int y) {
                         glVertex2i(xp[0], wh - yp[0]);
                         glEnd();
                         glFlush();
-                        count = 0;  /* 重置計數器，但保持在直線模式 */
+                        count = 0;  /* Reset counter but stay in line mode */
                     }
                     break;
                     
                 case (RECTANGLE):
-                    if (count == 0) {
-                        count++;
+                    /* Press: start rubberband */
+                    if (!rubberband) {
                         start_x = x;
                         start_y = y;
                         rubber_x = x;
                         rubber_y = y;
                         rubberband = 1;
-                    } else {
-                        rubberband = 0;
-                        glColor3f(r, g, b);
-                        if (fill)
-                            glBegin(GL_POLYGON);
-                        else
-                            glBegin(GL_LINE_LOOP);
-                        glVertex2i(x, wh - y);
-                        glVertex2i(x, wh - start_y);
-                        glVertex2i(start_x, wh - start_y);
-                        glVertex2i(start_x, wh - y);
-                        glEnd();
-                        glFlush();
-                        count = 0;  /* 重置計數器，但保持在矩形模式 */
                     }
                     break;
                     
                 case (CIRCLE):
-                    if (count == 0) {
-                        count++;
+                    /* Press: start rubberband */
+                    if (!rubberband) {
                         start_x = x;
                         start_y = y;
                         rubber_x = x;
                         rubber_y = y;
                         rubberband = 1;
-                    } else {
-                        rubberband = 0;
-                        int radius = (int)sqrt((x-start_x)*(x-start_x) + 
-                                              (y-start_y)*(y-start_y));
-                        glColor3f(r, g, b);
-                        glBegin(fill ? GL_POLYGON : GL_LINE_LOOP);
-                        for (int i = 0; i < 100; i++) {
-                            float angle = 2.0 * M_PI * i / 100.0;
-                            glVertex2f(start_x + radius * cos(angle), 
-                                      wh - start_y + radius * sin(angle));
-                        }
-                        glEnd();
-                        glFlush();
-                        count = 0;  /* 重置計數器，但保持在圓形模式 */
                     }
                     break;
                     
@@ -389,12 +368,12 @@ void mouse(int btn, int state, int x, int y) {
                             glVertex2i(x, wh - y);
                             glEnd();
                             glFlush();
-                            count = 0;  /* 重置計數器，但保持在三角形模式 */
+                            count = 0;  /* Reset counter but stay in triangle mode */
                     }
                     break;
                     
                 case (DRAW_POINTS):
-                    /* 隨機顏色 */
+                    /* Random color */
                     glColor3f((float)rand()/RAND_MAX, (float)rand()/RAND_MAX, (float)rand()/RAND_MAX);
                     y = wh - y;
                     glBegin(GL_POLYGON);
@@ -418,7 +397,7 @@ void mouse(int btn, int state, int x, int y) {
                         polygon_points[polygon_count][1] = y;
                         polygon_count++;
                         
-                        /* 繪製點 */
+                        /* Draw point */
                         glColor3f(r, g, b);
                         glPointSize(3.0);
                         glBegin(GL_POINTS);
@@ -426,7 +405,7 @@ void mouse(int btn, int state, int x, int y) {
                         glEnd();
                         glFlush();
                         
-                        /* 如果點數足夠，繪製線段 */
+                        /* If enough points, draw line segment */
                         if (polygon_count > 1) {
                             glBegin(GL_LINES);
                             glVertex2i(polygon_points[polygon_count-2][0], 
@@ -449,21 +428,60 @@ void mouse(int btn, int state, int x, int y) {
                     break;
             }
         }
+    } else if (btn == GLUT_LEFT_BUTTON && state == GLUT_UP) {
+        /* Release: complete rubberband drawing */
+        if (rubberband && (draw_mode == RECTANGLE || draw_mode == CIRCLE)) {
+            /* Clear final rubberband */
+            if (draw_mode == RECTANGLE) {
+                drawRubberRectangle(start_x, start_y, rubber_x, rubber_y);
+            } else if (draw_mode == CIRCLE) {
+                drawRubberCircle(start_x, start_y, rubber_x, rubber_y);
+            }
+            
+            /* Draw final shape */
+            if (draw_mode == RECTANGLE) {
+                glColor3f(r, g, b);
+                if (fill)
+                    glBegin(GL_POLYGON);
+                else
+                    glBegin(GL_LINE_LOOP);
+                glVertex2i(x, wh - y);
+                glVertex2i(x, wh - start_y);
+                glVertex2i(start_x, wh - start_y);
+                glVertex2i(start_x, wh - y);
+                glEnd();
+                glFlush();
+            } else if (draw_mode == CIRCLE) {
+                int radius = (int)sqrt((x-start_x)*(x-start_x) + 
+                                      (y-start_y)*(y-start_y));
+                glColor3f(r, g, b);
+                glBegin(fill ? GL_POLYGON : GL_LINE_LOOP);
+                for (int i = 0; i < 100; i++) {
+                    float angle = 2.0 * M_PI * i / 100.0;
+                    glVertex2f(start_x + radius * cos(angle), 
+                              wh - start_y + radius * sin(angle));
+                }
+                glEnd();
+                glFlush();
+            }
+            
+            rubberband = 0;
+        }
     } else if (btn == GLUT_RIGHT_BUTTON && state == GLUT_DOWN) {
-        /* 右鍵完成多邊形 */
+        /* Right click to complete polygon */
         if (draw_mode == POLYGON && polygon_count >= 3) {
             drawPolygon();
             draw_mode = 0;
             polygon_mode = 0;
         }
-        /* 右鍵顏色選擇 */
+        /* Right click for color selection */
         else if (draw_mode == 0) {
             colorPicker(x, y);
         }
     }
 }
 
-/* 選擇工具列項目 */
+/* Select toolbar item */
 int pick(int x, int y) {
     y = wh - y;
     if (y < wh - ww / 12)
@@ -490,32 +508,32 @@ int pick(int x, int y) {
         return 0;
 }
 
-/* 儲存繪圖 */
+/* Save drawing */
 void saveDrawing(const char* filename) {
     FILE* fp = fopen(filename, "wb");
     if (fp) {
-        /* 儲存歷史記錄 */
+        /* Save history */
         fwrite(&history_count, sizeof(int), 1, fp);
         fwrite(history, sizeof(DrawingItem), history_count, fp);
         fclose(fp);
-        printf("繪圖已儲存至 %s\n", filename);
+        printf("Drawing saved to %s\n", filename);
     }
 }
 
-/* 載入繪圖 */
+/* Load drawing */
 void loadDrawing(const char* filename) {
     FILE* fp = fopen(filename, "rb");
     if (fp) {
-        /* 清除當前畫布 */
+        /* Clear current canvas */
         glClearColor(0.8, 0.8, 0.8, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
         
-        /* 讀取歷史記錄 */
+        /* Read history */
         fread(&history_count, sizeof(int), 1, fp);
         fread(history, sizeof(DrawingItem), history_count, fp);
         fclose(fp);
         
-        /* 重繪所有項目 */
+        /* Redraw all items */
         display();
         for (int i = 0; i < history_count; i++) {
             glColor3f(history[i].r, history[i].g, history[i].b);
@@ -532,13 +550,14 @@ void loadDrawing(const char* filename) {
             }
         }
         glFlush();
-        printf("繪圖已從 %s 載入\n", filename);
+        printf("Drawing loaded from %s\n", filename);
     }
 }
 
-/* 復原 */
+/* Undo */
 void undo(void) {
     if (history_count > 0) {
+        redo_count++;
         history_count--;
         glClearColor(0.8, 0.8, 0.8, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -562,7 +581,34 @@ void undo(void) {
     }
 }
 
-/* 視窗大小調整 */
+/* Redo */
+void redo(void) {
+    if (redo_count > 0) {
+        redo_count--;
+        history_count++;
+        glClearColor(0.8, 0.8, 0.8, 1.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        display();
+        
+        for (int i = 0; i < history_count; i++) {
+            glColor3f(history[i].r, history[i].g, history[i].b);
+            if (history[i].type == POLYGON) {
+                if (history[i].filled)
+                    glBegin(GL_POLYGON);
+                else
+                    glBegin(GL_LINE_LOOP);
+                for (int j = 0; j < history[i].point_count; j++) {
+                    glVertex2i(history[i].points[j][0], 
+                              wh - history[i].points[j][1]);
+                }
+                glEnd();
+            }
+        }
+        glFlush();
+    }
+}
+
+/* Window resize */
 void myReshape(GLsizei w, GLsizei h) {
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
@@ -571,16 +617,21 @@ void myReshape(GLsizei w, GLsizei h) {
     glLoadIdentity();
 
     glViewport(0, 0, w, h);
+    
+    /* Clear entire window including old toolbar area */
     glClearColor(0.8, 0.8, 0.8, 1.0);
     glClear(GL_COLOR_BUFFER_BIT);
-    display();
-    glFlush();
-
+    
+    /* Update window size */
     ww = w;
     wh = h;
+    
+    /* Redraw toolbar at new position */
+    display();
+    glFlush();
 }
 
-/* 初始化 */
+/* Initialization */
 void myinit(void) {
     glViewport(0, 0, ww, wh);
     glMatrixMode(GL_PROJECTION);
@@ -589,10 +640,10 @@ void myinit(void) {
     glClearColor(0.8, 0.8, 0.8, 1.0);
     glClear(GL_COLOR_BUFFER_BIT);
     glFlush();
-    srand(time(NULL));  /* 初始化隨機數生成器 */
+    srand(time(NULL));  /* Initialize random number generator */
 }
 
-/* 工具列方塊繪製 */
+/* Toolbar box drawing */
 void screen_box(int x, int y, int s) {
     glBegin(GL_QUADS);
     glVertex2i(x, y);
@@ -602,7 +653,7 @@ void screen_box(int x, int y, int s) {
     glEnd();
 }
 
-/* 右鍵選單 */
+/* Right click menu */
 void right_menu(int id) {
     if (id == 1)
         exit(0);
@@ -611,7 +662,8 @@ void right_menu(int id) {
         glClear(GL_COLOR_BUFFER_BIT);
         display();
         glFlush();
-        history_count = 0;  /* 清除歷史記錄 */
+        history_count = 0;  /* Clear history */
+        redo_count = 0;     /* Clear redo stack */
     } else if (id == 3) {
         saveDrawing("drawing.bin");
     } else if (id == 4) {
@@ -619,16 +671,18 @@ void right_menu(int id) {
     } else if (id == 5) {
         undo();
     } else if (id == 6) {
+        redo();
+    } else if (id == 7) {
         deleteLastPolygon();
     }
 }
 
-/* 中間鍵選單 */
+/* Middle button menu */
 void middle_menu(int id) {
-    /* 空實現，可擴展 */
+    /* Empty implementation, can be extended */
 }
 
-/* 顏色選單 */
+/* Color menu */
 void color_menu(int id) {
     if (id == 1) { r = 1.0; g = 0.0; b = 0.0; }
     else if (id == 2) { r = 0.0; g = 1.0; b = 0.0; }
@@ -642,34 +696,34 @@ void color_menu(int id) {
     else if (id == 10) { r = 1.0; g = 0.5; b = 0.0; }
 }
 
-/* 像素大小選單 */
+/* Pixel size menu */
 void pixel_menu(int id) {
     if (id == 1 && size < 50.0) size *= 1.5;
     else if (id == 2 && size > 1.0) size /= 1.5;
 }
 
-/* 填充選單 */
+/* Fill menu */
 void fill_menu(int id) {
     fill = (id == 1);
 }
 
-/* 字型選單 */
+/* Font menu */
 void font_menu(int id) {
     font_type = id - 1;
 }
 
-/* 工具選單 */
+/* Tool menu */
 void tool_menu(int id) {
     draw_mode = id;
 }
 
-/* 鍵盤事件處理 */
+/* Keyboard event handler */
 void key(unsigned char k, int xx, int yy) {
     if (draw_mode == DRAW_TEXT) {
         glColor3f(r, g, b);
         glRasterPos2i(rx, ry);
         
-        /* 根據選擇的字型繪製文字 */
+        /* Draw text based on selected font */
         if (font_type == 0) {
             glutBitmapCharacter(GLUT_BITMAP_9_BY_15, k);
             rx += glutBitmapWidth(GLUT_BITMAP_9_BY_15, k);
@@ -687,6 +741,8 @@ void key(unsigned char k, int xx, int yy) {
         loadDrawing("drawing.bin");
     } else if (k == 'u' || k == 'U') {
         undo();
+    } else if (k == 'r' || k == 'R') {
+        redo();
     } else if (k == 'd' || k == 'D') {
         deleteLastPolygon();
     } else if (k == 'c' || k == 'C') {
@@ -695,14 +751,15 @@ void key(unsigned char k, int xx, int yy) {
         display();
         glFlush();
         history_count = 0;
+        redo_count = 0;
     }
 }
 
-/* 顯示函式 - 繪製工具列 */
+/* Display function - Draw toolbar */
 void display(void) {
     glPushAttrib(GL_ALL_ATTRIB_BITS);
     
-    /* 繪製工具列背景 */
+    /* Draw toolbar background */
     glColor3f(0.6, 0.6, 0.6);
     glBegin(GL_QUADS);
     glVertex2i(0, wh - ww / 12);
@@ -711,12 +768,12 @@ void display(void) {
     glVertex2i(0, wh);
     glEnd();
     
-    /* 繪製工具按鈕 */
+    /* Draw tool buttons */
     int btn_width = ww / 12;
     int btn_height = ww / 12;
     int start_y = wh - btn_height;
     
-    /* 線條按鈕 */
+    /* Line button */
     glColor3f(1.0, 1.0, 1.0);
     screen_box(0, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
@@ -725,7 +782,7 @@ void display(void) {
     glVertex2i(3*btn_width/4, start_y + btn_height/2);
     glEnd();
     
-    /* 矩形按鈕 */
+    /* Rectangle button */
     glColor3f(1.0, 0.0, 0.0);
     screen_box(btn_width, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
@@ -736,7 +793,7 @@ void display(void) {
     glVertex2i(btn_width + 3*btn_width/4, start_y + btn_height/4);
     glEnd();
     
-    /* 三角形按鈕 */
+    /* Triangle button */
     glColor3f(0.0, 1.0, 0.0);
     screen_box(2*btn_width, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
@@ -746,7 +803,7 @@ void display(void) {
     glVertex2i(2*btn_width + 3*btn_width/4, start_y + 3*btn_height/4);
     glEnd();
     
-    /* 點按鈕 */
+    /* Point button */
     glColor3f(0.0, 0.0, 1.0);
     screen_box(3*btn_width, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
@@ -755,14 +812,14 @@ void display(void) {
     glVertex2i(3*btn_width + btn_width/2, start_y + btn_height/2);
     glEnd();
     
-    /* 文字按鈕 */
+    /* Text button */
     glColor3f(1.0, 1.0, 0.0);
     screen_box(4*btn_width, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
     glRasterPos2i(4*btn_width + 5, start_y + 5);
     glutBitmapCharacter(GLUT_BITMAP_9_BY_15, 'T');
     
-    /* 多邊形按鈕 */
+    /* Polygon button */
     glColor3f(0.5, 0.5, 1.0);
     screen_box(5*btn_width, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
@@ -773,7 +830,7 @@ void display(void) {
     glVertex2i(5*btn_width + 3*btn_width/4, start_y + btn_height/2);
     glEnd();
     
-    /* 圓形按鈕 */
+    /* Circle button */
     glColor3f(1.0, 0.5, 0.0);
     screen_box(6*btn_width, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
@@ -785,7 +842,7 @@ void display(void) {
     }
     glEnd();
     
-    /* 橡皮擦按鈕 */
+    /* Eraser button */
     glColor3f(0.8, 0.8, 0.8);
     screen_box(7*btn_width, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
@@ -803,7 +860,7 @@ void display(void) {
     glVertex2i(7*btn_width + btn_width/3, start_y + 2*btn_height/3);
     glEnd();
     
-    /* 噴槍按鈕 */
+    /* Spray button */
     glColor3f(0.5, 1.0, 0.5);
     screen_box(8*btn_width, start_y, btn_width);
     glColor3f(0.0, 0.0, 0.0);
@@ -818,15 +875,15 @@ void display(void) {
     glEnd();
     glPointSize(size);
     
-    /* 顏色預覽 */
+    /* Color preview */
     glColor3f(r, g, b);
     screen_box(9*btn_width, start_y, btn_width);
     
-    /* 狀態顯示 */
+    /* Status display */
     glColor3f(0.0, 0.0, 0.0);
     glRasterPos2i(10, 20);
     char status[100];
-    sprintf(status, "模式: %d 顏色: %.1f,%.1f,%.1f 大小: %.1f", 
+    sprintf(status, "Mode: %d Color: %.1f,%.1f,%.1f Size: %.1f", 
             draw_mode, r, g, b, size);
     for (int i = 0; status[i] != '\0'; i++) {
         glutBitmapCharacter(GLUT_BITMAP_9_BY_15, status[i]);
@@ -836,60 +893,61 @@ void display(void) {
     glPopAttrib();
 }
 
-/* 主函式 */
+/* Main function */
 int main(int argc, char **argv) {
     int c_menu, p_menu, f_menu, fo_menu, t_menu;
     
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_SINGLE | GLUT_RGB);
     glutInitWindowSize(ww, wh);
-    glutCreateWindow("超級小畫家 - 期中考作業");
+    glutCreateWindow("Super Paint - Midterm Project");
     
-    /* 創建顏色選單 */
+    /* Create color menu */
     c_menu = glutCreateMenu(color_menu);
-    glutAddMenuEntry("紅色", 1);
-    glutAddMenuEntry("綠色", 2);
-    glutAddMenuEntry("藍色", 3);
-    glutAddMenuEntry("青色", 4);
-    glutAddMenuEntry("洋紅", 5);
-    glutAddMenuEntry("黃色", 6);
-    glutAddMenuEntry("白色", 7);
-    glutAddMenuEntry("黑色", 8);
-    glutAddMenuEntry("灰色", 9);
-    glutAddMenuEntry("橙色", 10);
+    glutAddMenuEntry("Red", 1);
+    glutAddMenuEntry("Green", 2);
+    glutAddMenuEntry("Blue", 3);
+    glutAddMenuEntry("Cyan", 4);
+    glutAddMenuEntry("Magenta", 5);
+    glutAddMenuEntry("Yellow", 6);
+    glutAddMenuEntry("White", 7);
+    glutAddMenuEntry("Black", 8);
+    glutAddMenuEntry("Gray", 9);
+    glutAddMenuEntry("Orange", 10);
     
-    /* 創建像素大小選單 */
+    /* Create pixel size menu */
     p_menu = glutCreateMenu(pixel_menu);
-    glutAddMenuEntry("增加大小", 1);
-    glutAddMenuEntry("減少大小", 2);
+    glutAddMenuEntry("Increase Size", 1);
+    glutAddMenuEntry("Decrease Size", 2);
     
-    /* 創建填充選單 */
+    /* Create fill menu */
     f_menu = glutCreateMenu(fill_menu);
-    glutAddMenuEntry("填充開啟", 1);
-    glutAddMenuEntry("填充關閉", 2);
+    glutAddMenuEntry("Fill On", 1);
+    glutAddMenuEntry("Fill Off", 2);
     
-    /* 創建字型選單 */
+    /* Create font menu */
     fo_menu = glutCreateMenu(font_menu);
-    glutAddMenuEntry("9x15 字型", 1);
+    glutAddMenuEntry("9x15 Font", 1);
     glutAddMenuEntry("Times Roman", 2);
     glutAddMenuEntry("Helvetica", 3);
     
-    /* 創建右鍵選單 */
+    /* Create right click menu */
     glutCreateMenu(right_menu);
-    glutAddMenuEntry("退出", 1);
-    glutAddMenuEntry("清除", 2);
-    glutAddMenuEntry("儲存", 3);
-    glutAddMenuEntry("載入", 4);
-    glutAddMenuEntry("復原", 5);
-    glutAddMenuEntry("刪除多邊形", 6);
+    glutAddMenuEntry("Exit", 1);
+    glutAddMenuEntry("Clear", 2);
+    glutAddMenuEntry("Save", 3);
+    glutAddMenuEntry("Load", 4);
+    glutAddMenuEntry("Undo", 5);
+    glutAddMenuEntry("Redo", 6);
+    glutAddMenuEntry("Delete Polygon", 7);
     glutAttachMenu(GLUT_RIGHT_BUTTON);
     
-    /* 創建中鍵選單 */
+    /* Create middle button menu */
     glutCreateMenu(middle_menu);
-    glutAddSubMenu("顏色", c_menu);
-    glutAddSubMenu("大小", p_menu);
-    glutAddSubMenu("填充", f_menu);
-    glutAddSubMenu("字型", fo_menu);
+    glutAddSubMenu("Color", c_menu);
+    glutAddSubMenu("Size", p_menu);
+    glutAddSubMenu("Fill", f_menu);
+    glutAddSubMenu("Font", fo_menu);
     glutAttachMenu(GLUT_MIDDLE_BUTTON);
     
     myinit();
