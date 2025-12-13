@@ -51,6 +51,7 @@ void deleteLastPolygon(void);
 void drawSpray(int, int);
 void drawEraser(int, int);
 void colorPicker(int, int);
+void redrawHistory(void);
 
 /* Global Variables */
 GLsizei wh = 600, ww = 800; /* Initial window size */
@@ -208,31 +209,18 @@ void drawPolygon(void) {
 
 /* Delete last polygon */
 void deleteLastPolygon(void) {
-    /* Simple implementation: clear canvas and redraw all history except last one */
-    if (history_count > 0) {
-        history_count--;
-        glClearColor(0.8, 0.8, 0.8, 1.0);
-        glClear(GL_COLOR_BUFFER_BIT);
-        
-        /* Redraw all toolbar elements */
-        display();
-        
-        /* Redraw history */
-        for (int i = 0; i < history_count; i++) {
-            glColor3f(history[i].r, history[i].g, history[i].b);
-            if (history[i].type == POLYGON) {
-                if (history[i].filled)
-                    glBegin(GL_POLYGON);
-                else
-                    glBegin(GL_LINE_LOOP);
-                for (int j = 0; j < history[i].point_count; j++) {
-                    glVertex2i(history[i].points[j][0], 
-                              wh - history[i].points[j][1]);
-                }
-                glEnd();
+    /* Find and delete last polygon in history */
+    for (int i = history_count - 1; i >= 0; i--) {
+        if (history[i].type == POLYGON) {
+            /* Shift all items after this one */
+            for (int j = i; j < history_count - 1; j++) {
+                history[j] = history[j + 1];
             }
+            history_count--;
+            redo_count = 0;
+            redrawHistory();
+            return;
         }
-        glFlush();
     }
 }
 
@@ -319,6 +307,21 @@ void mouse(int btn, int state, int x, int y) {
                         glVertex2i(xp[0], wh - yp[0]);
                         glEnd();
                         glFlush();
+                        
+                        /* Save to history */
+                        if (history_count < MAX_HISTORY) {
+                            history[history_count].type = LINE;
+                            history[history_count].x1 = xp[0];
+                            history[history_count].y1 = yp[0];
+                            history[history_count].x2 = x;
+                            history[history_count].y2 = y;
+                            history[history_count].r = r;
+                            history[history_count].g = g;
+                            history[history_count].b = b;
+                            history_count++;
+                            redo_count = 0;
+                        }
+                        
                         count = 0;  /* Reset counter but stay in line mode */
                     }
                     break;
@@ -359,15 +362,30 @@ void mouse(int btn, int state, int x, int y) {
                             break;
                         case (2):
                             glColor3f(r, g, b);
-                            if (fill)
-                                glBegin(GL_POLYGON);
-                            else
-                                glBegin(GL_LINE_LOOP);
+                            glBegin(GL_LINE_LOOP);  /* Always draw outline */
                             glVertex2i(xp[0], wh - yp[0]);
                             glVertex2i(xp[1], wh - yp[1]);
                             glVertex2i(x, wh - y);
                             glEnd();
                             glFlush();
+                            
+                            /* Save to history */
+                            if (history_count < MAX_HISTORY) {
+                                history[history_count].type = TRIANGLE;
+                                history[history_count].x1 = xp[0];
+                                history[history_count].y1 = yp[0];
+                                history[history_count].x2 = xp[1];
+                                history[history_count].y2 = yp[1];
+                                history[history_count].points[0][0] = x;
+                                history[history_count].points[0][1] = y;
+                                history[history_count].r = r;
+                                history[history_count].g = g;
+                                history[history_count].b = b;
+                                history[history_count].filled = 0;  /* Always outline */
+                                history_count++;
+                                redo_count = 0;
+                            }
+                            
                             count = 0;  /* Reset counter but stay in triangle mode */
                     }
                     break;
@@ -441,21 +459,33 @@ void mouse(int btn, int state, int x, int y) {
             /* Draw final shape */
             if (draw_mode == RECTANGLE) {
                 glColor3f(r, g, b);
-                if (fill)
-                    glBegin(GL_POLYGON);
-                else
-                    glBegin(GL_LINE_LOOP);
+                glBegin(GL_LINE_LOOP);  /* Always draw outline */
                 glVertex2i(x, wh - y);
                 glVertex2i(x, wh - start_y);
                 glVertex2i(start_x, wh - start_y);
                 glVertex2i(start_x, wh - y);
                 glEnd();
                 glFlush();
+                
+                /* Save to history */
+                if (history_count < MAX_HISTORY) {
+                    history[history_count].type = RECTANGLE;
+                    history[history_count].x1 = start_x;
+                    history[history_count].y1 = start_y;
+                    history[history_count].x2 = x;
+                    history[history_count].y2 = y;
+                    history[history_count].r = r;
+                    history[history_count].g = g;
+                    history[history_count].b = b;
+                    history[history_count].filled = 0;  /* Always outline */
+                    history_count++;
+                    redo_count = 0;
+                }
             } else if (draw_mode == CIRCLE) {
                 int radius = (int)sqrt((x-start_x)*(x-start_x) + 
                                       (y-start_y)*(y-start_y));
                 glColor3f(r, g, b);
-                glBegin(fill ? GL_POLYGON : GL_LINE_LOOP);
+                glBegin(GL_LINE_LOOP);  /* Always draw outline */
                 for (int i = 0; i < 100; i++) {
                     float angle = 2.0 * M_PI * i / 100.0;
                     glVertex2f(start_x + radius * cos(angle), 
@@ -463,6 +493,21 @@ void mouse(int btn, int state, int x, int y) {
                 }
                 glEnd();
                 glFlush();
+                
+                /* Save to history */
+                if (history_count < MAX_HISTORY) {
+                    history[history_count].type = CIRCLE;
+                    history[history_count].x1 = start_x;
+                    history[history_count].y1 = start_y;
+                    history[history_count].x2 = x;
+                    history[history_count].y2 = y;
+                    history[history_count].r = r;
+                    history[history_count].g = g;
+                    history[history_count].b = b;
+                    history[history_count].filled = 0;  /* Always outline */
+                    history_count++;
+                    redo_count = 0;
+                }
             }
             
             rubberband = 0;
@@ -524,20 +569,69 @@ void saveDrawing(const char* filename) {
 void loadDrawing(const char* filename) {
     FILE* fp = fopen(filename, "rb");
     if (fp) {
-        /* Clear current canvas */
-        glClearColor(0.8, 0.8, 0.8, 1.0);
-        glClear(GL_COLOR_BUFFER_BIT);
-        
         /* Read history */
         fread(&history_count, sizeof(int), 1, fp);
         fread(history, sizeof(DrawingItem), history_count, fp);
         fclose(fp);
         
+        /* Reset redo stack */
+        redo_count = 0;
+        
         /* Redraw all items */
-        display();
-        for (int i = 0; i < history_count; i++) {
-            glColor3f(history[i].r, history[i].g, history[i].b);
-            if (history[i].type == POLYGON) {
+        redrawHistory();
+        printf("Drawing loaded from %s\n", filename);
+    }
+}
+
+/* Redraw all history items */
+void redrawHistory(void) {
+    glClearColor(0.8, 0.8, 0.8, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    display();
+    
+    for (int i = 0; i < history_count; i++) {
+        glColor3f(history[i].r, history[i].g, history[i].b);
+        
+        switch (history[i].type) {
+            case LINE:
+                glBegin(GL_LINES);
+                glVertex2i(history[i].x1, wh - history[i].y1);
+                glVertex2i(history[i].x2, wh - history[i].y2);
+                glEnd();
+                break;
+                
+            case RECTANGLE:
+                glBegin(GL_LINE_LOOP);
+                glVertex2i(history[i].x2, wh - history[i].y2);
+                glVertex2i(history[i].x2, wh - history[i].y1);
+                glVertex2i(history[i].x1, wh - history[i].y1);
+                glVertex2i(history[i].x1, wh - history[i].y2);
+                glEnd();
+                break;
+                
+            case TRIANGLE:
+                glBegin(GL_LINE_LOOP);
+                glVertex2i(history[i].x1, wh - history[i].y1);
+                glVertex2i(history[i].x2, wh - history[i].y2);
+                glVertex2i(history[i].points[0][0], wh - history[i].points[0][1]);
+                glEnd();
+                break;
+                
+            case CIRCLE:
+                {
+                    int radius = (int)sqrt((history[i].x2 - history[i].x1) * (history[i].x2 - history[i].x1) + 
+                                          (history[i].y2 - history[i].y1) * (history[i].y2 - history[i].y1));
+                    glBegin(GL_LINE_LOOP);
+                    for (int j = 0; j < 100; j++) {
+                        float angle = 2.0 * M_PI * j / 100.0;
+                        glVertex2f(history[i].x1 + radius * cos(angle), 
+                                  wh - history[i].y1 + radius * sin(angle));
+                    }
+                    glEnd();
+                }
+                break;
+                
+            case POLYGON:
                 if (history[i].filled)
                     glBegin(GL_POLYGON);
                 else
@@ -547,11 +641,10 @@ void loadDrawing(const char* filename) {
                               wh - history[i].points[j][1]);
                 }
                 glEnd();
-            }
+                break;
         }
-        glFlush();
-        printf("Drawing loaded from %s\n", filename);
     }
+    glFlush();
 }
 
 /* Undo */
@@ -559,25 +652,7 @@ void undo(void) {
     if (history_count > 0) {
         redo_count++;
         history_count--;
-        glClearColor(0.8, 0.8, 0.8, 1.0);
-        glClear(GL_COLOR_BUFFER_BIT);
-        display();
-        
-        for (int i = 0; i < history_count; i++) {
-            glColor3f(history[i].r, history[i].g, history[i].b);
-            if (history[i].type == POLYGON) {
-                if (history[i].filled)
-                    glBegin(GL_POLYGON);
-                else
-                    glBegin(GL_LINE_LOOP);
-                for (int j = 0; j < history[i].point_count; j++) {
-                    glVertex2i(history[i].points[j][0], 
-                              wh - history[i].points[j][1]);
-                }
-                glEnd();
-            }
-        }
-        glFlush();
+        redrawHistory();
     }
 }
 
@@ -586,25 +661,7 @@ void redo(void) {
     if (redo_count > 0) {
         redo_count--;
         history_count++;
-        glClearColor(0.8, 0.8, 0.8, 1.0);
-        glClear(GL_COLOR_BUFFER_BIT);
-        display();
-        
-        for (int i = 0; i < history_count; i++) {
-            glColor3f(history[i].r, history[i].g, history[i].b);
-            if (history[i].type == POLYGON) {
-                if (history[i].filled)
-                    glBegin(GL_POLYGON);
-                else
-                    glBegin(GL_LINE_LOOP);
-                for (int j = 0; j < history[i].point_count; j++) {
-                    glVertex2i(history[i].points[j][0], 
-                              wh - history[i].points[j][1]);
-                }
-                glEnd();
-            }
-        }
-        glFlush();
+        redrawHistory();
     }
 }
 
@@ -694,6 +751,9 @@ void color_menu(int id) {
     else if (id == 8) { r = 0.0; g = 0.0; b = 0.0; }
     else if (id == 9) { r = 0.5; g = 0.5; b = 0.5; }
     else if (id == 10) { r = 1.0; g = 0.5; b = 0.0; }
+    
+    /* Update color preview immediately */
+    display();
 }
 
 /* Pixel size menu */
@@ -705,6 +765,8 @@ void pixel_menu(int id) {
 /* Fill menu */
 void fill_menu(int id) {
     fill = (id == 1);
+    /* Update display to show fill mode change */
+    display();
 }
 
 /* Font menu */
