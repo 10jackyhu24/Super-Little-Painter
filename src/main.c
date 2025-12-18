@@ -86,9 +86,8 @@ int select_has_content = 0;        /* Whether selection has captured content */
 unsigned char* selection_buffer = NULL;  /* Selection buffer */
 int selection_width = 0, selection_height = 0;   /* Selection dimensions */
 int selection_origin_x = 0, selection_origin_y = 0;  /* Original position */
-int select_moving = 0;             /* Moving selection */
-int select_offset_x = 0, select_offset_y = 0;  /* Movement offset */
-int move_start_x = 0, move_start_y = 0;  /* Movement start point */
+int moving_selection = 0;          /* Currently moving selection */
+int move_offset_x = 0, move_offset_y = 0;  /* Move offset from origin */
 
 /* Drawing history structure */
 #define MAX_HISTORY 100
@@ -279,52 +278,60 @@ void colorPicker(int x, int y) {
 
 /* Mouse motion handler (rubberband effect) */
 void motion(int x, int y) {
-    if (select_moving && draw_mode == SELECT && select_has_content) {
-        /* Moving selection */
+    /* Handle moving selection */
+    if (moving_selection && select_has_content) {
         int max_y = wh - ww / 13;
         if (x < 0) x = 0;
         if (y < 0) y = 0;
         if (x >= ww) x = ww - 1;
         if (y >= max_y) y = max_y - 1;
         
+        /* Clear old selection rectangle using XOR */
+        int old_draw_x = selection_origin_x + move_offset_x;
+        int old_draw_y = selection_origin_y + move_offset_y;
+        
+        glEnable(GL_COLOR_LOGIC_OP);
+        glLogicOp(GL_XOR);
+        glColor3f(1.0, 1.0, 1.0);
+        glEnable(GL_LINE_STIPPLE);
+        glLineStipple(1, 0xAAAA);
+        glBegin(GL_LINE_LOOP);
+        glVertex2i(old_draw_x, wh - old_draw_y);
+        glVertex2i(old_draw_x + selection_width, wh - old_draw_y);
+        glVertex2i(old_draw_x + selection_width, wh - old_draw_y - selection_height);
+        glVertex2i(old_draw_x, wh - old_draw_y - selection_height);
+        glEnd();
+        glDisable(GL_LINE_STIPPLE);
+        
         /* Calculate new offset */
-        int new_offset_x = x - move_start_x;
-        int new_offset_y = y - move_start_y;
+        move_offset_x = x - select_x1;
+        move_offset_y = y - select_y1;
         
-        /* Redraw everything to clear old position */
-        redrawHistory();
+        /* Draw new selection rectangle */
+        int new_draw_x = selection_origin_x + move_offset_x;
+        int new_draw_y = selection_origin_y + move_offset_y;
         
-        /* Draw selection at new position */
-        if (selection_buffer != NULL) {
-            int draw_x = selection_origin_x + new_offset_x;
-            int draw_y = selection_origin_y + new_offset_y;
-            int draw_gl_y = wh - draw_y - selection_height;
-            
-            glRasterPos2i(draw_x, draw_gl_y);
-            glDrawPixels(selection_width, selection_height, GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
-            
-            /* Draw selection rectangle */
-            glEnable(GL_COLOR_LOGIC_OP);
-            glLogicOp(GL_XOR);
-            glColor3f(1.0, 1.0, 1.0);
-            glBegin(GL_LINE_LOOP);
-            glVertex2i(draw_x, wh - draw_y);
-            glVertex2i(draw_x, wh - draw_y - selection_height);
-            glVertex2i(draw_x + selection_width, wh - draw_y - selection_height);
-            glVertex2i(draw_x + selection_width, wh - draw_y);
-            glEnd();
-            glLogicOp(GL_COPY);
-            glDisable(GL_COLOR_LOGIC_OP);
-        }
-        
-        select_offset_x = new_offset_x;
-        select_offset_y = new_offset_y;
+        glEnable(GL_LINE_STIPPLE);
+        glLineStipple(1, 0xAAAA);
+        glBegin(GL_LINE_LOOP);
+        glVertex2i(new_draw_x, wh - new_draw_y);
+        glVertex2i(new_draw_x + selection_width, wh - new_draw_y);
+        glVertex2i(new_draw_x + selection_width, wh - new_draw_y - selection_height);
+        glVertex2i(new_draw_x, wh - new_draw_y - selection_height);
+        glEnd();
+        glDisable(GL_LINE_STIPPLE);
+        glLogicOp(GL_COPY);
+        glDisable(GL_COLOR_LOGIC_OP);
         glFlush();
-    } else if (selecting && draw_mode == SELECT) {
-        /* Drawing selection rectangle */
-        int max_y = wh - ww / 13;
+        return;
+    }
+    
+    /* Handle drawing selection rectangle */
+    if (selecting && draw_mode == SELECT) {
+        /* Clamp coordinates to valid range */
         if (x < 0) x = 0;
         if (y < 0) y = 0;
+        int max_y = wh - ww / 13;
         if (x >= ww) x = ww - 1;
         if (y >= max_y) y = max_y - 1;
         
@@ -353,7 +360,10 @@ void motion(int x, int y) {
         glLogicOp(GL_COPY);
         glDisable(GL_COLOR_LOGIC_OP);
         glFlush();
-    } else if (rubberband) {
+        return;
+    }
+    
+    if (rubberband) {
         /* Clear previous rubberband */
         if (draw_mode == RECTANGLE) {
             drawRubberRectangle(start_x, start_y, rubber_x, rubber_y);
@@ -370,42 +380,6 @@ void motion(int x, int y) {
         
         rubber_x = x;
         rubber_y = y;
-    } else if (selecting && draw_mode == SELECT) {
-        /* Clamp coordinates to valid range */
-        if (x < 0) x = 0;
-        if (y < 0) y = 0;
-        int max_y = wh - ww / 13;
-        if (x >= ww) x = ww - 1;
-        if (y >= max_y) y = max_y - 1;
-        
-        /* Draw selection rectangle */
-        glEnable(GL_COLOR_LOGIC_OP);
-        glLogicOp(GL_XOR);
-        glColor3f(1.0, 1.0, 1.0);
-        glBegin(GL_LINE_LOOP);
-        glVertex2i(select_x1, wh - select_y1);
-        glVertex2i(select_x1, wh - select_y2);
-        glVertex2i(select_x2, wh - select_y2);
-        glVertex2i(select_x2, wh - select_y1);
-        glEnd();
-        glLogicOp(GL_COPY);
-        glDisable(GL_COLOR_LOGIC_OP);
-        
-        select_x2 = x;
-        select_y2 = y;
-        
-        glEnable(GL_COLOR_LOGIC_OP);
-        glLogicOp(GL_XOR);
-        glColor3f(1.0, 1.0, 1.0);
-        glBegin(GL_LINE_LOOP);
-        glVertex2i(select_x1, wh - select_y1);
-        glVertex2i(select_x1, wh - select_y2);
-        glVertex2i(select_x2, wh - select_y2);
-        glVertex2i(select_x2, wh - select_y1);
-        glEnd();
-        glLogicOp(GL_COPY);
-        glDisable(GL_COLOR_LOGIC_OP);
-        glFlush();
     } else if (brush_drawing && draw_mode == DRAW_POINTS) {
         /* Continuous brush drawing */
         glColor3f(r, g, b);
@@ -463,55 +437,52 @@ void mouse(int btn, int state, int x, int y) {
     if (btn == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
         where = pick(x, y);
         
-        /* Handle selection tool separately */
+        /* Handle selection tool */
         if (draw_mode == SELECT && where == 0) {
             /* Check if clicking inside existing selection to move it */
-            if (select_has_content && selection_buffer != NULL) {
-                int sel_x = selection_origin_x + select_offset_x;
-                int sel_y = selection_origin_y + select_offset_y;
+            if (select_has_content) {
+                int min_x = selection_origin_x + move_offset_x;
+                int max_x = min_x + selection_width;
+                int min_y = selection_origin_y + move_offset_y;
+                int max_y = min_y + selection_height;
                 
-                if (x >= sel_x && x <= sel_x + selection_width &&
-                    y >= sel_y && y <= sel_y + selection_height) {
-                    /* Start moving selection */
-                    select_moving = 1;
-                    move_start_x = x;
-                    move_start_y = y;
+                if (x >= min_x && x <= max_x && y >= min_y && y <= max_y) {
+                    /* Start moving the selection */
+                    moving_selection = 1;
+                    select_x1 = x;
+                    select_y1 = y;
+                    
+                    /* Draw initial selection rectangle */
+                    glEnable(GL_COLOR_LOGIC_OP);
+                    glLogicOp(GL_XOR);
+                    glColor3f(1.0, 1.0, 1.0);
+                    glEnable(GL_LINE_STIPPLE);
+                    glLineStipple(1, 0xAAAA);
+                    glBegin(GL_LINE_LOOP);
+                    glVertex2i(min_x, wh - min_y);
+                    glVertex2i(max_x, wh - min_y);
+                    glVertex2i(max_x, wh - max_y);
+                    glVertex2i(min_x, wh - max_y);
+                    glEnd();
+                    glDisable(GL_LINE_STIPPLE);
+                    glLogicOp(GL_COPY);
+                    glDisable(GL_COLOR_LOGIC_OP);
+                    glFlush();
+                    
                     return;
                 }
             }
             
-            /* Start new selection - save old one first if exists */
-            if (select_has_content && selection_buffer != NULL) {
-                /* Save current selection to history */
-                int buffer_size = selection_width * selection_height * 3;
-                unsigned char* copy_buffer = (unsigned char*)malloc(buffer_size);
-                if (copy_buffer != NULL) {
-                    memcpy(copy_buffer, selection_buffer, buffer_size);
-                    
-                    if (history_count < MAX_HISTORY) {
-                        history[history_count].type = SELECT;
-                        history[history_count].x1 = selection_origin_x + select_offset_x;
-                        history[history_count].y1 = selection_origin_y + select_offset_y;
-                        history[history_count].fill_data = copy_buffer;
-                        history[history_count].fill_width = selection_width;
-                        history[history_count].fill_height = selection_height;
-                        history_count++;
-                        redo_count = 0;
-                    } else {
-                        free(copy_buffer);
-                    }
-                }
-                
+            /* Start new selection - clear old one */
+            if (selection_buffer != NULL) {
                 free(selection_buffer);
                 selection_buffer = NULL;
             }
-            
-            /* Start new selection */
             selection_width = 0;
             selection_height = 0;
             select_has_content = 0;
-            select_offset_x = 0;
-            select_offset_y = 0;
+            move_offset_x = 0;
+            move_offset_y = 0;
             
             selecting = 1;
             select_x1 = x;
@@ -803,33 +774,74 @@ void mouse(int btn, int state, int x, int y) {
                     break;
                     
                 case (SELECT):
-                    /* Handled at the top of GLUT_DOWN */
-                    break;
+                {
+                    /* This case is now handled at the top of GLUT_DOWN */
+                    /* Do nothing here */
+                }
+                break;
             }
         }
     } else if (btn == GLUT_LEFT_BUTTON && state == GLUT_UP) {
-        /* Handle selection movement completion */
-        if (select_moving && draw_mode == SELECT) {
-            select_moving = 0;
+        /* Handle moving selection completion */
+        if (moving_selection && select_has_content) {
+            moving_selection = 0;
             
-            /* Update origin with offset */
-            selection_origin_x += select_offset_x;
-            selection_origin_y += select_offset_y;
-            select_offset_x = 0;
-            select_offset_y = 0;
+            /* Clear the selection rectangle */
+            int draw_x = selection_origin_x + move_offset_x;
+            int draw_y = selection_origin_y + move_offset_y;
             
-            /* Redraw to finalize position */
-            redrawHistory();
-            if (selection_buffer != NULL) {
-                int draw_gl_y = wh - selection_origin_y - selection_height;
-                glRasterPos2i(selection_origin_x, draw_gl_y);
-                glDrawPixels(selection_width, selection_height, GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
-                glFlush();
+            glEnable(GL_COLOR_LOGIC_OP);
+            glLogicOp(GL_XOR);
+            glColor3f(1.0, 1.0, 1.0);
+            glEnable(GL_LINE_STIPPLE);
+            glLineStipple(1, 0xAAAA);
+            glBegin(GL_LINE_LOOP);
+            glVertex2i(draw_x, wh - draw_y);
+            glVertex2i(draw_x + selection_width, wh - draw_y);
+            glVertex2i(draw_x + selection_width, wh - draw_y - selection_height);
+            glVertex2i(draw_x, wh - draw_y - selection_height);
+            glEnd();
+            glDisable(GL_LINE_STIPPLE);
+            glLogicOp(GL_COPY);
+            glDisable(GL_COLOR_LOGIC_OP);
+            
+            /* Paste selection at new location */
+            if (selection_buffer != NULL && history_count < MAX_HISTORY) {
+                int buffer_size = selection_width * selection_height * 3;
+                unsigned char* copy_buffer = (unsigned char*)malloc(buffer_size);
+                if (copy_buffer != NULL) {
+                    memcpy(copy_buffer, selection_buffer, buffer_size);
+                    
+                    int new_x = selection_origin_x + move_offset_x;
+                    int new_y = selection_origin_y + move_offset_y;
+                    
+                    /* Draw the selection at new position */
+                    int draw_y_gl = wh - new_y - selection_height;
+                    glRasterPos2i(new_x, draw_y_gl);
+                    glDrawPixels(selection_width, selection_height, 
+                                GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+                    glFlush();
+                    
+                    history[history_count].type = SELECT;
+                    history[history_count].x1 = new_x;
+                    history[history_count].y1 = new_y;
+                    history[history_count].fill_data = copy_buffer;
+                    history[history_count].fill_width = selection_width;
+                    history[history_count].fill_height = selection_height;
+                    history_count++;
+                    redo_count = 0;
+                    
+                    /* Update origin for next move */
+                    selection_origin_x = new_x;
+                    selection_origin_y = new_y;
+                    move_offset_x = 0;
+                    move_offset_y = 0;
+                }
             }
             return;
         }
         
-        /* Handle selection rectangle completion */
+        /* Handle selection completion */
         if (selecting && draw_mode == SELECT) {
             selecting = 0;
             
@@ -862,33 +874,45 @@ void mouse(int btn, int state, int x, int y) {
             selection_width = max_x - min_x;
             selection_height = max_y - min_y;
             
-            /* Only capture if selection is valid */
-            if (selection_width > 5 && selection_height > 5) {
+            /* Only capture if selection is valid and reasonable size */
+            if (selection_width > 5 && selection_height > 5 && 
+                selection_width < 2000 && selection_height < 2000) {
+                
                 int buffer_size = selection_width * selection_height * 3;
                 
-                if (buffer_size > 0 && buffer_size < 10000000) {
-                    selection_buffer = (unsigned char*)malloc(buffer_size);
-                    
-                    if (selection_buffer != NULL) {
-                        int read_y = wh - max_y;
-                        glReadPixels(min_x, read_y, selection_width, selection_height, 
-                                    GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
-                        
-                        select_has_content = 1;
-                        selection_origin_x = min_x;
-                        selection_origin_y = min_y;
-                        select_offset_x = 0;
-                        select_offset_y = 0;
-                        
-                        printf("Selection captured: %dx%d at (%d,%d)\n", 
-                               selection_width, selection_height, min_x, min_y);
-                    } else {
-                        printf("Failed to allocate %d bytes\n", buffer_size);
-                    }
+                /* Free old buffer if exists */
+                if (selection_buffer != NULL) {
+                    free(selection_buffer);
                 }
+                
+                selection_buffer = (unsigned char*)malloc(buffer_size);
+                
+                if (selection_buffer != NULL) {
+                    int read_y = wh - max_y;
+                    glReadPixels(min_x, read_y, selection_width, selection_height, 
+                                GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+                    
+                    select_has_content = 1;
+                    selection_origin_x = min_x;
+                    selection_origin_y = min_y;
+                    move_offset_x = 0;
+                    move_offset_y = 0;
+                    
+                    printf("Selection captured: %dx%d at (%d,%d)\n", 
+                           selection_width, selection_height, min_x, min_y);
+                } else {
+                    printf("Failed to allocate selection buffer\n");
+                    select_has_content = 0;
+                }
+            } else {
+                printf("Invalid selection size: %dx%d\n", selection_width, selection_height);
+                select_has_content = 0;
             }
+            
             return;
         }
+        
+        /* Stop moving selection - REMOVED, now handled above */
         
         /* Stop brush drawing and save to history */
         if (brush_drawing && draw_mode == DRAW_POINTS && brush_start) {
@@ -1471,13 +1495,18 @@ void right_menu(int id) {
         history_count = 0;  /* Clear history */
         redo_count = 0;     /* Clear redo stack */
         
-        /* Free selection buffer */
+        /* Free selection buffer and reset selection state */
         if (selection_buffer != NULL) {
             free(selection_buffer);
             selection_buffer = NULL;
         }
         selection_width = 0;
         selection_height = 0;
+        select_has_content = 0;
+        selecting = 0;
+        moving_selection = 0;
+        move_offset_x = 0;
+        move_offset_y = 0;
     } else if (id == 3) {
         saveDrawing("drawing.bin");
     } else if (id == 4) {
@@ -1572,13 +1601,18 @@ void key(unsigned char k, int xx, int yy) {
         history_count = 0;
         redo_count = 0;
         
-        /* Free selection buffer */
+        /* Free selection buffer and reset selection state */
         if (selection_buffer != NULL) {
             free(selection_buffer);
             selection_buffer = NULL;
         }
         selection_width = 0;
         selection_height = 0;
+        select_has_content = 0;
+        selecting = 0;
+        moving_selection = 0;
+        move_offset_x = 0;
+        move_offset_y = 0;
     }
 }
 
