@@ -82,6 +82,10 @@ int brush_drawing = 0;             /* Brush continuous drawing flag */
 int select_mode = 0;               /* Select mode */
 int selecting = 0;                 /* Currently selecting */
 int select_x1, select_y1, select_x2, select_y2;  /* Selection area */
+int select_moving = 0;             /* Moving selection */
+int select_offset_x, select_offset_y;  /* Selection move offset */
+unsigned char* selection_buffer = NULL;  /* Selection buffer */
+int selection_width, selection_height;   /* Selection dimensions */
 
 /* Drawing history structure */
 #define MAX_HISTORY 100
@@ -93,9 +97,12 @@ typedef struct {
     int filled;
     int points[100][2];
     int point_count;
+    unsigned char* fill_data;  /* For fill bucket undo */
+    int fill_width, fill_height, fill_x, fill_y;  /* Fill area info */
 } DrawingItem;
 
 DrawingItem history[MAX_HISTORY];
+DrawingItem redo_stack[MAX_HISTORY];  /* Separate redo stack */
 int history_count = 0;
 int redo_count = 0;  /* Redo stack count */
 
@@ -126,44 +133,15 @@ void drawSpray(int x, int y) {
     glColor3f(r, g, b);
     glPointSize(1.0);
     
-    /* Save spray points for history */
-    if (history_count < MAX_HISTORY) {
-        history[history_count].type = SPRAY;
-        history[history_count].r = r;
-        history[history_count].g = g;
-        history[history_count].b = b;
-        history[history_count].point_count = 0;
-        
-        glBegin(GL_POINTS);
-        for (int i = 0; i < 30; i++) {
-            int dx = (rand() % (int)(size * 4)) - size * 2;
-            int dy = (rand() % (int)(size * 4)) - size * 2;
-            if (dx*dx + dy*dy <= size*size*4) {
-                glVertex2i(x + dx, y + dy);
-                if (history[history_count].point_count < 100) {
-                    history[history_count].points[history[history_count].point_count][0] = x + dx;
-                    history[history_count].points[history[history_count].point_count][1] = y + dy;
-                    history[history_count].point_count++;
-                }
-            }
+    glBegin(GL_POINTS);
+    for (int i = 0; i < 30; i++) {
+        int dx = (rand() % (int)(size * 4)) - size * 2;
+        int dy = (rand() % (int)(size * 4)) - size * 2;
+        if (dx*dx + dy*dy <= size*size*4) {
+            glVertex2i(x + dx, y + dy);
         }
-        glEnd();
-        
-        if (history[history_count].point_count > 0) {
-            history_count++;
-            redo_count = 0;
-        }
-    } else {
-        glBegin(GL_POINTS);
-        for (int i = 0; i < 30; i++) {
-            int dx = (rand() % (int)(size * 4)) - size * 2;
-            int dy = (rand() % (int)(size * 4)) - size * 2;
-            if (dx*dx + dy*dy <= size*size*4) {
-                glVertex2i(x + dx, y + dy);
-            }
-        }
-        glEnd();
     }
+    glEnd();
     
     glPointSize(size);
 }
@@ -248,6 +226,7 @@ void drawPolygon(void) {
         history[history_count].b = b;
         history[history_count].filled = fill;
         history[history_count].point_count = polygon_count;
+        history[history_count].fill_data = NULL;
         for (int i = 0; i < polygon_count; i++) {
             history[history_count].points[i][0] = polygon_points[i][0];
             history[history_count].points[i][1] = polygon_points[i][1];
@@ -297,7 +276,39 @@ void colorPicker(int x, int y) {
 
 /* Mouse motion handler (rubberband effect) */
 void motion(int x, int y) {
-    if (rubberband) {
+    if (select_moving && draw_mode == SELECT && selection_buffer != NULL) {
+        /* Calculate new position */
+        int new_x = x;
+        int new_y = y;
+        
+        /* Clamp to valid range */
+        if (new_x < 0) new_x = 0;
+        if (new_y < 0) new_y = 0;
+        if (new_x + selection_width > ww) new_x = ww - selection_width;
+        if (new_y + selection_height > wh - ww / 13) new_y = wh - ww / 13 - selection_height;
+        
+        /* Redraw everything */
+        redrawHistory();
+        
+        /* Draw selection at new position */
+        glRasterPos2i(new_x, wh - new_y - selection_height);
+        glDrawPixels(selection_width, selection_height, GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+        
+        /* Draw selection rectangle */
+        glColor3f(1.0, 1.0, 1.0);
+        glBegin(GL_LINE_LOOP);
+        glVertex2i(new_x, wh - new_y);
+        glVertex2i(new_x, wh - new_y - selection_height);
+        glVertex2i(new_x + selection_width, wh - new_y - selection_height);
+        glVertex2i(new_x + selection_width, wh - new_y);
+        glEnd();
+        
+        glFlush();
+        
+        /* Update offset for final placement */
+        select_offset_x = x;
+        select_offset_y = y;
+    } else if (rubberband) {
         /* Clear previous rubberband */
         if (draw_mode == RECTANGLE) {
             drawRubberRectangle(start_x, start_y, rubber_x, rubber_y);
@@ -354,11 +365,36 @@ void motion(int x, int y) {
         glVertex2f(x + size, y_inv - size);
         glEnd();
         glFlush();
+        
+        /* Save points to history */
+        if (history_count < MAX_HISTORY && history[history_count].point_count < 100) {
+            history[history_count].points[history[history_count].point_count][0] = x;
+            history[history_count].points[history[history_count].point_count][1] = y_inv;
+            history[history_count].point_count++;
+        }
     } else if (spray_mode) {
         drawSpray(x, y);
+        /* Save spray points to history */
+        if (history_count < MAX_HISTORY && history[history_count].point_count < 100) {
+            for (int i = 0; i < 30 && history[history_count].point_count < 100; i++) {
+                int dx = (rand() % (int)(size * 4)) - size * 2;
+                int dy = (rand() % (int)(size * 4)) - size * 2;
+                if (dx*dx + dy*dy <= size*size*4) {
+                    history[history_count].points[history[history_count].point_count][0] = x + dx;
+                    history[history_count].points[history[history_count].point_count][1] = wh - y + dy;
+                    history[history_count].point_count++;
+                }
+            }
+        }
         glFlush();
     } else if (eraser_mode) {
         drawEraser(x, y);
+        /* Save eraser points to history */
+        if (history_count < MAX_HISTORY && history[history_count].point_count < 100) {
+            history[history_count].points[history[history_count].point_count][0] = x;
+            history[history_count].points[history[history_count].point_count][1] = wh - y;
+            history[history_count].point_count++;
+        }
         glFlush();
     }
 }
@@ -368,9 +404,27 @@ void mouse(int btn, int state, int x, int y) {
     static int count;
     int where;
     static int xp[2], yp[2];
+    static int spray_start = 0;
+    static int eraser_start = 0;
+    static int brush_start = 0;
     
     if (btn == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
         where = pick(x, y);
+        
+        /* Check if clicking inside selection to move it */
+        if (select_mode && !selecting && selection_buffer != NULL) {
+            int min_x = select_x1 < select_x2 ? select_x1 : select_x2;
+            int max_x = select_x1 > select_x2 ? select_x1 : select_x2;
+            int min_y = select_y1 < select_y2 ? select_y1 : select_y2;
+            int max_y = select_y1 > select_y2 ? select_y1 : select_y2;
+            
+            if (x >= min_x && x <= max_x && y >= min_y && y <= max_y && where == 0) {
+                select_moving = 1;
+                select_offset_x = x;
+                select_offset_y = y;
+                return;
+            }
+        }
         
         if (where != 0) {
             /* Only reset counter when switching modes */
@@ -413,6 +467,7 @@ void mouse(int btn, int state, int x, int y) {
                             history[history_count].r = r;
                             history[history_count].g = g;
                             history[history_count].b = b;
+                            history[history_count].fill_data = NULL;
                             history_count++;
                             redo_count = 0;
                         }
@@ -477,6 +532,7 @@ void mouse(int btn, int state, int x, int y) {
                                 history[history_count].g = g;
                                 history[history_count].b = b;
                                 history[history_count].filled = 0;  /* Always outline */
+                                history[history_count].fill_data = NULL;
                                 history_count++;
                                 redo_count = 0;
                             }
@@ -486,17 +542,31 @@ void mouse(int btn, int state, int x, int y) {
                     break;
                     
                 case (DRAW_POINTS):
-                    /* Start brush drawing */
-                    brush_drawing = 1;
-                    glColor3f(r, g, b);
-                    y = wh - y;
-                    glBegin(GL_POLYGON);
-                    glVertex2f(x + size, y + size);
-                    glVertex2f(x - size, y + size);
-                    glVertex2f(x - size, y - size);
-                    glVertex2f(x + size, y - size);
-                    glEnd();
-                    glFlush();
+                    {
+                        /* Start brush drawing */
+                        brush_drawing = 1;
+                        brush_start = 1;
+                        glColor3f(r, g, b);
+                        int y_inv = wh - y;
+                        glBegin(GL_POLYGON);
+                        glVertex2f(x + size, y_inv + size);
+                        glVertex2f(x - size, y_inv + size);
+                        glVertex2f(x - size, y_inv - size);
+                        glVertex2f(x + size, y_inv - size);
+                        glEnd();
+                        glFlush();
+                        
+                        /* Start new brush stroke in history */
+                        if (history_count < MAX_HISTORY) {
+                            history[history_count].type = DRAW_POINTS;
+                            history[history_count].r = r;
+                            history[history_count].g = g;
+                            history[history_count].b = b;
+                            history[history_count].size = size;
+                            history[history_count].point_count = 0;
+                            history[history_count].fill_data = NULL;
+                        }
+                    }
                     break;
                     
                 case (DRAW_TEXT):
@@ -506,92 +576,203 @@ void mouse(int btn, int state, int x, int y) {
                     break;
                     
                 case (POLYGON):
-                    if (polygon_count < 100) {
-                        polygon_points[polygon_count][0] = x;
-                        polygon_points[polygon_count][1] = y;
-                        polygon_count++;
-                        
-                        /* Draw point */
-                        glColor3f(r, g, b);
-                        glPointSize(3.0);
-                        glBegin(GL_POINTS);
-                        glVertex2i(x, wh - y);
-                        glEnd();
-                        glFlush();
-                        
-                        /* If enough points, draw line segment */
-                        if (polygon_count > 1) {
-                            glBegin(GL_LINES);
-                            glVertex2i(polygon_points[polygon_count-2][0], 
-                                      wh - polygon_points[polygon_count-2][1]);
+                    {
+                        if (polygon_count < 100) {
+                            polygon_points[polygon_count][0] = x;
+                            polygon_points[polygon_count][1] = y;
+                            polygon_count++;
+                            
+                            /* Draw point */
+                            glColor3f(r, g, b);
+                            glPointSize(3.0);
+                            glBegin(GL_POINTS);
                             glVertex2i(x, wh - y);
                             glEnd();
                             glFlush();
+                            
+                            /* If enough points, draw line segment */
+                            if (polygon_count > 1) {
+                                glBegin(GL_LINES);
+                                glVertex2i(polygon_points[polygon_count-2][0], 
+                                          wh - polygon_points[polygon_count-2][1]);
+                                glVertex2i(x, wh - y);
+                                glEnd();
+                                glFlush();
+                            }
                         }
                     }
                     break;
                     
                 case (SPRAY):
-                    drawSpray(x, y);
-                    glFlush();
+                    {
+                        spray_start = 1;
+                        /* Start new spray stroke in history */
+                        if (history_count < MAX_HISTORY) {
+                            history[history_count].type = SPRAY;
+                            history[history_count].r = r;
+                            history[history_count].g = g;
+                            history[history_count].b = b;
+                            history[history_count].point_count = 0;
+                            history[history_count].fill_data = NULL;
+                        }
+                        drawSpray(x, y);
+                        /* Save spray points */
+                        if (history_count < MAX_HISTORY && history[history_count].point_count < 100) {
+                            for (int i = 0; i < 30 && history[history_count].point_count < 100; i++) {
+                                int dx = (rand() % (int)(size * 4)) - size * 2;
+                                int dy = (rand() % (int)(size * 4)) - size * 2;
+                                if (dx*dx + dy*dy <= size*size*4) {
+                                    history[history_count].points[history[history_count].point_count][0] = x + dx;
+                                    history[history_count].points[history[history_count].point_count][1] = wh - y + dy;
+                                    history[history_count].point_count++;
+                                }
+                            }
+                        }
+                        glFlush();
+                    }
                     break;
                     
                 case (ERASER):
-                    drawEraser(x, y);
-                    
-                    /* Save eraser stroke to history */
-                    if (history_count < MAX_HISTORY) {
-                        history[history_count].type = ERASER;
-                        history[history_count].x1 = x;
-                        history[history_count].y1 = wh - y;
-                        history[history_count].size = size;
-                        history_count++;
-                        redo_count = 0;
+                    {
+                        eraser_start = 1;
+                        drawEraser(x, y);
+                        
+                        /* Start new eraser stroke in history */
+                        if (history_count < MAX_HISTORY) {
+                            history[history_count].type = ERASER;
+                            history[history_count].size = size;
+                            history[history_count].point_count = 0;
+                            history[history_count].fill_data = NULL;
+                        }
+                        glFlush();
                     }
-                    
-                    glFlush();
                     break;
                     
                 case (FILL_BUCKET):
-                    /* Flood fill at clicked position */
-                    if (x >= 0 && x < ww && y >= 0 && y < wh - ww / 13) {
-                        GLubyte pixel[3];
-                        glReadPixels(x, wh - y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
-                        float old_r = pixel[0] / 255.0f;
-                        float old_g = pixel[1] / 255.0f;
-                        float old_b = pixel[2] / 255.0f;
-                        
-                        /* Check if different color */
-                        float tolerance = 0.02f;
-                        if (fabs(old_r - r) > tolerance || fabs(old_g - g) > tolerance || fabs(old_b - b) > tolerance) {
-                            scanlineFill(x, wh - y, old_r, old_g, old_b);
+                    {
+                        /* Flood fill at clicked position */
+                        if (x >= 0 && x < ww && y >= 0 && y < wh - ww / 13) {
+                            GLubyte pixel[3];
+                            glReadPixels(x, wh - y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
+                            float old_r = pixel[0] / 255.0f;
+                            float old_g = pixel[1] / 255.0f;
+                            float old_b = pixel[2] / 255.0f;
+                            
+                            /* Check if different color */
+                            float tolerance = 0.02f;
+                            if (fabs(old_r - r) > tolerance || fabs(old_g - g) > tolerance || fabs(old_b - b) > tolerance) {
+                                /* Save area before filling for undo */
+                                int max_y = wh - ww / 13;
+                                int area_size = ww * max_y * 3;
+                                unsigned char* before_fill = (unsigned char*)malloc(area_size);
+                                glReadPixels(0, 0, ww, max_y, GL_RGB, GL_UNSIGNED_BYTE, before_fill);
+                                
+                                /* Perform fill */
+                                scanlineFill(x, wh - y, old_r, old_g, old_b);
+                                
+                                /* Save to history */
+                                if (history_count < MAX_HISTORY) {
+                                    history[history_count].type = FILL_BUCKET;
+                                    history[history_count].x1 = x;
+                                    history[history_count].y1 = wh - y;
+                                    history[history_count].r = r;
+                                    history[history_count].g = g;
+                                    history[history_count].b = b;
+                                    history[history_count].fill_data = before_fill;
+                                    history[history_count].fill_width = ww;
+                                    history[history_count].fill_height = max_y;
+                                    history[history_count].fill_x = 0;
+                                    history[history_count].fill_y = 0;
+                                    history_count++;
+                                    redo_count = 0;
+                                } else {
+                                    free(before_fill);
+                                }
+                            }
                         }
                     }
                     break;
                     
                 case (EYEDROPPER):
-                    /* Pick color from clicked position */
-                    if (x >= 0 && x < ww && y >= 0 && y < wh) {
-                        GLubyte pixel[3];
-                        glReadPixels(x, wh - y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
-                        r = pixel[0] / 255.0f;
-                        g = pixel[1] / 255.0f;
-                        b = pixel[2] / 255.0f;
-                        display();  /* Update color preview */
+                    {
+                        /* Pick color from clicked position */
+                        if (x >= 0 && x < ww && y >= 0 && y < wh) {
+                            GLubyte pixel[3];
+                            glReadPixels(x, wh - y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
+                            r = pixel[0] / 255.0f;
+                            g = pixel[1] / 255.0f;
+                            b = pixel[2] / 255.0f;
+                            display();  /* Update color preview */
+                        }
                     }
                     break;
                     
                 case (SELECT):
-                    /* Start selection */
-                    selecting = 1;
-                    select_x1 = x;
-                    select_y1 = y;
-                    select_x2 = x;
-                    select_y2 = y;
+                    {
+                        /* Clear previous selection when starting new one */
+                        if (selection_buffer != NULL) {
+                            free(selection_buffer);
+                            selection_buffer = NULL;
+                        }
+                        selection_width = 0;
+                        selection_height = 0;
+                        
+                        /* Start selection */
+                        selecting = 1;
+                        select_x1 = x;
+                        select_y1 = y;
+                        select_x2 = x;
+                        select_y2 = y;
+                    }
                     break;
             }
         }
     } else if (btn == GLUT_LEFT_BUTTON && state == GLUT_UP) {
+        /* Stop moving selection */
+        if (select_moving && draw_mode == SELECT && selection_buffer != NULL) {
+            select_moving = 0;
+            
+            /* Calculate final position */
+            int new_x = x;
+            int new_y = y;
+            
+            /* Clamp to valid range */
+            if (new_x < 0) new_x = 0;
+            if (new_y < 0) new_y = 0;
+            if (new_x + selection_width > ww) new_x = ww - selection_width;
+            if (new_y + selection_height > wh - ww / 13) new_y = wh - ww / 13 - selection_height;
+            
+            /* Update selection position */
+            select_x1 = new_x;
+            select_y1 = new_y;
+            select_x2 = new_x + selection_width;
+            select_y2 = new_y + selection_height;
+            
+            /* Redraw and paste selection */
+            redrawHistory();
+            glRasterPos2i(new_x, wh - new_y - selection_height);
+            glDrawPixels(selection_width, selection_height, GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+            glFlush();
+            
+            /* Save as history item */
+            if (history_count < MAX_HISTORY) {
+                history[history_count].type = SELECT;
+                history[history_count].x1 = new_x;
+                history[history_count].y1 = new_y;
+                history[history_count].x2 = new_x + selection_width;
+                history[history_count].y2 = new_y + selection_height;
+                history[history_count].fill_data = (unsigned char*)malloc(selection_width * selection_height * 3);
+                if (history[history_count].fill_data != NULL) {
+                    memcpy(history[history_count].fill_data, selection_buffer, selection_width * selection_height * 3);
+                    history[history_count].fill_width = selection_width;
+                    history[history_count].fill_height = selection_height;
+                    history_count++;
+                    redo_count = 0;
+                }
+            }
+            return;
+        }
+        
         /* Stop selection */
         if (selecting && draw_mode == SELECT) {
             selecting = 0;
@@ -608,20 +789,81 @@ void mouse(int btn, int state, int x, int y) {
             glLogicOp(GL_COPY);
             glDisable(GL_COLOR_LOGIC_OP);
             glFlush();
+            
+            /* Capture selected area */
+            int min_x = select_x1 < select_x2 ? select_x1 : select_x2;
+            int max_x = select_x1 > select_x2 ? select_x1 : select_x2;
+            int min_y = select_y1 < select_y2 ? select_y1 : select_y2;
+            int max_y = select_y1 > select_y2 ? select_y1 : select_y2;
+            
+            selection_width = max_x - min_x;
+            selection_height = max_y - min_y;
+            
+            if (selection_width > 0 && selection_height > 0 && 
+                min_x >= 0 && max_x < ww && min_y >= 0 && max_y < wh) {
+                
+                /* Free old buffer */
+                if (selection_buffer != NULL) {
+                    free(selection_buffer);
+                    selection_buffer = NULL;
+                }
+                
+                /* Allocate new buffer */
+                int buffer_size = selection_width * selection_height * 3;
+                selection_buffer = (unsigned char*)malloc(buffer_size);
+                
+                if (selection_buffer != NULL) {
+                    /* Read pixels from framebuffer */
+                    glReadPixels(min_x, wh - max_y, selection_width, selection_height, 
+                                GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+                    
+                    /* Update select coordinates to normalized values */
+                    select_x1 = min_x;
+                    select_y1 = min_y;
+                    select_x2 = max_x;
+                    select_y2 = max_y;
+                } else {
+                    printf("Failed to allocate selection buffer\n");
+                    selection_width = 0;
+                    selection_height = 0;
+                }
+            } else {
+                /* Invalid selection */
+                if (selection_buffer != NULL) {
+                    free(selection_buffer);
+                    selection_buffer = NULL;
+                }
+                selection_width = 0;
+                selection_height = 0;
+            }
         }
         
         /* Stop brush drawing and save to history */
-        if (brush_drawing && draw_mode == DRAW_POINTS) {
+        if (brush_drawing && draw_mode == DRAW_POINTS && brush_start) {
             brush_drawing = 0;
-            /* Save brush stroke to history (simplified) */
+            brush_start = 0;
+            /* Complete brush stroke in history */
             if (history_count < MAX_HISTORY) {
-                history[history_count].type = DRAW_POINTS;
-                history[history_count].x1 = x;
-                history[history_count].y1 = wh - y;
-                history[history_count].r = r;
-                history[history_count].g = g;
-                history[history_count].b = b;
-                history[history_count].size = size;
+                history_count++;
+                redo_count = 0;
+            }
+        }
+        
+        /* Stop spray and save to history */
+        if (spray_mode && spray_start) {
+            spray_start = 0;
+            /* Complete spray stroke in history */
+            if (history_count < MAX_HISTORY && history[history_count].point_count > 0) {
+                history_count++;
+                redo_count = 0;
+            }
+        }
+        
+        /* Stop eraser and save to history */
+        if (eraser_mode && eraser_start) {
+            eraser_start = 0;
+            /* Complete eraser stroke in history */
+            if (history_count < MAX_HISTORY && history[history_count].point_count > 0) {
                 history_count++;
                 redo_count = 0;
             }
@@ -658,6 +900,7 @@ void mouse(int btn, int state, int x, int y) {
                     history[history_count].g = g;
                     history[history_count].b = b;
                     history[history_count].filled = 0;  /* Always outline */
+                    history[history_count].fill_data = NULL;
                     history_count++;
                     redo_count = 0;
                 }
@@ -685,6 +928,7 @@ void mouse(int btn, int state, int x, int y) {
                     history[history_count].g = g;
                     history[history_count].b = b;
                     history[history_count].filled = 0;  /* Always outline */
+                    history[history_count].fill_data = NULL;
                     history_count++;
                     redo_count = 0;
                 }
@@ -770,79 +1014,159 @@ void loadDrawing(const char* filename) {
     }
 }
 
-/* Scanline flood fill - more efficient than stack-based */
+/* Improved scanline flood fill algorithm */
 void scanlineFill(int x, int y, float old_r, float old_g, float old_b) {
-    stackTop = -1;
-    float tolerance = 0.02f;
+    float tolerance = 0.01f;
     int maxY = wh - ww / 13;  /* Don't fill toolbar area */
     
-    /* Create visited array to prevent infinite loops */
-    static unsigned char *visited = NULL;
-    if (visited == NULL) {
-        visited = (unsigned char*)calloc(ww * wh, sizeof(unsigned char));
-    }
-    memset(visited, 0, ww * wh * sizeof(unsigned char));
+    /* Check if starting point is valid */
+    if (x < 0 || x >= ww || y < 0 || y >= maxY) return;
     
-    /* Push starting point */
-    if (stackTop < STACK_SIZE - 1) {
-        fillStack[++stackTop].x = x;
-        fillStack[stackTop].y = y;
+    /* Check if already the target color */
+    if (fabs(old_r - r) < tolerance && fabs(old_g - g) < tolerance && fabs(old_b - b) < tolerance) {
+        return;  /* Already the same color */
     }
+    
+    /* Create visited array */
+    static unsigned char *visited = NULL;
+    static int visited_size = 0;
+    int required_size = ww * maxY;
+    
+    if (visited == NULL || visited_size < required_size) {
+        if (visited != NULL) free(visited);
+        visited = (unsigned char*)calloc(required_size, sizeof(unsigned char));
+        visited_size = required_size;
+        if (visited == NULL) {
+            printf("Failed to allocate visited array\n");
+            return;
+        }
+    } else {
+        memset(visited, 0, required_size * sizeof(unsigned char));
+    }
+    
+    /* Initialize stack */
+    stackTop = -1;
+    fillStack[++stackTop].x = x;
+    fillStack[stackTop].y = y;
     
     glColor3f(r, g, b);
-    glBegin(GL_POINTS);
     
+    int points_filled = 0;
+    
+    /* Process stack */
     while (stackTop >= 0) {
+        /* Prevent stack overflow */
+        if (stackTop >= STACK_SIZE - 100) {
+            printf("Stack overflow in fill - stopping\n");
+            break;
+        }
+        
         Point p = fillStack[stackTop--];
         int px = p.x;
         int py = p.y;
         
+        /* Boundary check */
         if (px < 0 || px >= ww || py < 0 || py >= maxY) continue;
         
         /* Check if already visited */
         int idx = py * ww + px;
+        if (idx < 0 || idx >= required_size) continue;
         if (visited[idx]) continue;
-        visited[idx] = 1;
         
+        /* Read current pixel color */
         GLubyte pixel[3];
         glReadPixels(px, py, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
         float curr_r = pixel[0] / 255.0f;
         float curr_g = pixel[1] / 255.0f;
         float curr_b = pixel[2] / 255.0f;
         
-        /* Check if color matches */
+        /* Check if color matches the original color */
         if (fabs(curr_r - old_r) > tolerance || 
             fabs(curr_g - old_g) > tolerance || 
             fabs(curr_b - old_b) > tolerance) {
             continue;
         }
         
-        /* Paint pixel */
-        glVertex2i(px, py);
+        /* Mark as visited and fill */
+        visited[idx] = 1;
         
-        /* Add 4-way neighbors to stack */
-        if (stackTop < STACK_SIZE - 4) {
-            if (px + 1 < ww) {
-                fillStack[++stackTop].x = px + 1;
-                fillStack[stackTop].y = py;
+        /* Scanline fill - extend left and right */
+        int left = px;
+        int right = px;
+        
+        /* Extend to the left */
+        while (left > 0) {
+            int test_idx = py * ww + (left - 1);
+            if (test_idx < 0 || test_idx >= required_size || visited[test_idx]) break;
+            
+            glReadPixels(left - 1, py, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
+            curr_r = pixel[0] / 255.0f;
+            curr_g = pixel[1] / 255.0f;
+            curr_b = pixel[2] / 255.0f;
+            
+            if (fabs(curr_r - old_r) > tolerance || 
+                fabs(curr_g - old_g) > tolerance || 
+                fabs(curr_b - old_b) > tolerance) break;
+            
+            left--;
+            visited[test_idx] = 1;
+        }
+        
+        /* Extend to the right */
+        while (right < ww - 1) {
+            int test_idx = py * ww + (right + 1);
+            if (test_idx < 0 || test_idx >= required_size || visited[test_idx]) break;
+            
+            glReadPixels(right + 1, py, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
+            curr_r = pixel[0] / 255.0f;
+            curr_g = pixel[1] / 255.0f;
+            curr_b = pixel[2] / 255.0f;
+            
+            if (fabs(curr_r - old_r) > tolerance || 
+                fabs(curr_g - old_g) > tolerance || 
+                fabs(curr_b - old_b) > tolerance) break;
+            
+            right++;
+            visited[test_idx] = 1;
+        }
+        
+        /* Draw the horizontal line */
+        glBegin(GL_POINTS);
+        for (int i = left; i <= right; i++) {
+            glVertex2i(i, py);
+            points_filled++;
+        }
+        glEnd();
+        
+        /* Flush periodically for visual feedback */
+        if (points_filled % 500 == 0) {
+            glFlush();
+        }
+        
+        /* Add adjacent rows to stack */
+        for (int i = left; i <= right; i++) {
+            /* Check row above */
+            if (py + 1 < maxY && stackTop < STACK_SIZE - 2) {
+                int above_idx = (py + 1) * ww + i;
+                if (above_idx >= 0 && above_idx < required_size && !visited[above_idx]) {
+                    fillStack[++stackTop].x = i;
+                    fillStack[stackTop].y = py + 1;
+                }
             }
-            if (px - 1 >= 0) {
-                fillStack[++stackTop].x = px - 1;
-                fillStack[stackTop].y = py;
-            }
-            if (py + 1 < maxY) {
-                fillStack[++stackTop].x = px;
-                fillStack[stackTop].y = py + 1;
-            }
-            if (py - 1 >= 0) {
-                fillStack[++stackTop].x = px;
-                fillStack[stackTop].y = py - 1;
+            
+            /* Check row below */
+            if (py - 1 >= 0 && stackTop < STACK_SIZE - 2) {
+                int below_idx = (py - 1) * ww + i;
+                if (below_idx >= 0 && below_idx < required_size && !visited[below_idx]) {
+                    fillStack[++stackTop].x = i;
+                    fillStack[stackTop].y = py - 1;
+                }
             }
         }
     }
     
-    glEnd();
     glFlush();
+    printf("Filled %d points\n", points_filled);
 }
 
 /* Simple PPM to JPG conversion using external command (if available) */
@@ -932,12 +1256,15 @@ void redrawHistory(void) {
             case DRAW_POINTS:
                 {
                     float s = history[i].size;
-                    glBegin(GL_POLYGON);
-                    glVertex2f(history[i].x1 + s, history[i].y1 + s);
-                    glVertex2f(history[i].x1 - s, history[i].y1 + s);
-                    glVertex2f(history[i].x1 - s, history[i].y1 - s);
-                    glVertex2f(history[i].x1 + s, history[i].y1 - s);
-                    glEnd();
+                    /* Draw all points in the brush stroke */
+                    for (int j = 0; j < history[i].point_count; j++) {
+                        glBegin(GL_POLYGON);
+                        glVertex2f(history[i].points[j][0] + s, history[i].points[j][1] + s);
+                        glVertex2f(history[i].points[j][0] - s, history[i].points[j][1] + s);
+                        glVertex2f(history[i].points[j][0] - s, history[i].points[j][1] - s);
+                        glVertex2f(history[i].points[j][0] + s, history[i].points[j][1] - s);
+                        glEnd();
+                    }
                 }
                 break;
                 
@@ -955,12 +1282,15 @@ void redrawHistory(void) {
                 {
                     float s = history[i].size;
                     glColor3f(0.8, 0.8, 0.8);  /* Background color */
-                    glBegin(GL_POLYGON);
-                    glVertex2f(history[i].x1 + s, history[i].y1 + s);
-                    glVertex2f(history[i].x1 - s, history[i].y1 + s);
-                    glVertex2f(history[i].x1 - s, history[i].y1 - s);
-                    glVertex2f(history[i].x1 + s, history[i].y1 - s);
-                    glEnd();
+                    /* Draw all points in the eraser stroke */
+                    for (int j = 0; j < history[i].point_count; j++) {
+                        glBegin(GL_POLYGON);
+                        glVertex2f(history[i].points[j][0] + s, history[i].points[j][1] + s);
+                        glVertex2f(history[i].points[j][0] - s, history[i].points[j][1] + s);
+                        glVertex2f(history[i].points[j][0] - s, history[i].points[j][1] - s);
+                        glVertex2f(history[i].points[j][0] + s, history[i].points[j][1] - s);
+                        glEnd();
+                    }
                 }
                 break;
                 
@@ -975,6 +1305,24 @@ void redrawHistory(void) {
                 }
                 glEnd();
                 break;
+                
+            case FILL_BUCKET:
+                /* Restore the filled area from saved data */
+                if (history[i].fill_data != NULL) {
+                    /* First restore the before-fill state, then apply fill */
+                    /* Since we're redrawing everything, we need to apply the fill again */
+                    /* This is a simplified version - just skip for now during redraw */
+                }
+                break;
+                
+            case SELECT:
+                /* Restore selected area */
+                if (history[i].fill_data != NULL) {
+                    glRasterPos2i(history[i].x1, wh - history[i].y1 - history[i].fill_height);
+                    glDrawPixels(history[i].fill_width, history[i].fill_height, 
+                                GL_RGB, GL_UNSIGNED_BYTE, history[i].fill_data);
+                }
+                break;
         }
     }
     glFlush();
@@ -983,7 +1331,11 @@ void redrawHistory(void) {
 /* Undo */
 void undo(void) {
     if (history_count > 0) {
-        redo_count++;
+        /* Move current item to redo stack */
+        if (redo_count < MAX_HISTORY) {
+            redo_stack[redo_count] = history[history_count - 1];
+            redo_count++;
+        }
         history_count--;
         redrawHistory();
     }
@@ -992,9 +1344,13 @@ void undo(void) {
 /* Redo */
 void redo(void) {
     if (redo_count > 0) {
-        redo_count--;
-        history_count++;
-        redrawHistory();
+        /* Move item from redo stack back to history */
+        if (history_count < MAX_HISTORY) {
+            history[history_count] = redo_stack[redo_count - 1];
+            history_count++;
+            redo_count--;
+            redrawHistory();
+        }
     }
 }
 
