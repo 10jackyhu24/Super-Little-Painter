@@ -11,6 +11,9 @@
 #define CIRCLE 7
 #define ERASER 8
 #define SPRAY 9
+#define FILL_BUCKET 10
+#define EYEDROPPER 11
+#define SELECT 12
 
 #include <GL/glut.h>
 #include <stdlib.h>
@@ -52,9 +55,12 @@ void drawSpray(int, int);
 void drawEraser(int, int);
 void colorPicker(int, int);
 void redrawHistory(void);
+void floodFill(int, int, float, float, float);
+void floodFillStack(int, int, float, float, float);
+void scanlineFill(int, int, float, float, float);
 
 /* Global Variables */
-GLsizei wh = 600, ww = 800; /* Initial window size */
+GLsizei wh = 700, ww = 1300; /* Initial window size - increased to fit all buttons */
 GLfloat size = 5.0;         /* Point/Eraser size */
 int draw_mode = 0;          /* Drawing mode */
 int rx, ry;                 /* Cursor position */
@@ -70,6 +76,12 @@ int polygon_points[100][2];        /* Polygon points array */
 int eraser_mode = 0;               /* Eraser mode */
 int spray_mode = 0;                /* Spray mode */
 int polygon_mode = 0;              /* Polygon drawing mode */
+int fill_bucket_mode = 0;          /* Fill bucket mode */
+int eyedropper_mode = 0;           /* Eyedropper mode */
+int brush_drawing = 0;             /* Brush continuous drawing flag */
+int select_mode = 0;               /* Select mode */
+int selecting = 0;                 /* Currently selecting */
+int select_x1, select_y1, select_x2, select_y2;  /* Selection area */
 
 /* Drawing history structure */
 #define MAX_HISTORY 100
@@ -86,6 +98,15 @@ typedef struct {
 DrawingItem history[MAX_HISTORY];
 int history_count = 0;
 int redo_count = 0;  /* Redo stack count */
+
+/* Stack for flood fill */
+typedef struct {
+    int x, y;
+} Point;
+
+#define STACK_SIZE 500000
+Point fillStack[STACK_SIZE];
+int stackTop = -1;
 
 /* Draw square */
 void drawSquare(int x, int y) {
@@ -104,15 +125,46 @@ void drawSpray(int x, int y) {
     y = wh - y;
     glColor3f(r, g, b);
     glPointSize(1.0);
-    glBegin(GL_POINTS);
-    for (int i = 0; i < 30; i++) {
-        int dx = (rand() % (int)(size * 4)) - size * 2;
-        int dy = (rand() % (int)(size * 4)) - size * 2;
-        if (dx*dx + dy*dy <= size*size*4) {
-            glVertex2i(x + dx, y + dy);
+    
+    /* Save spray points for history */
+    if (history_count < MAX_HISTORY) {
+        history[history_count].type = SPRAY;
+        history[history_count].r = r;
+        history[history_count].g = g;
+        history[history_count].b = b;
+        history[history_count].point_count = 0;
+        
+        glBegin(GL_POINTS);
+        for (int i = 0; i < 30; i++) {
+            int dx = (rand() % (int)(size * 4)) - size * 2;
+            int dy = (rand() % (int)(size * 4)) - size * 2;
+            if (dx*dx + dy*dy <= size*size*4) {
+                glVertex2i(x + dx, y + dy);
+                if (history[history_count].point_count < 100) {
+                    history[history_count].points[history[history_count].point_count][0] = x + dx;
+                    history[history_count].points[history[history_count].point_count][1] = y + dy;
+                    history[history_count].point_count++;
+                }
+            }
         }
+        glEnd();
+        
+        if (history[history_count].point_count > 0) {
+            history_count++;
+            redo_count = 0;
+        }
+    } else {
+        glBegin(GL_POINTS);
+        for (int i = 0; i < 30; i++) {
+            int dx = (rand() % (int)(size * 4)) - size * 2;
+            int dy = (rand() % (int)(size * 4)) - size * 2;
+            if (dx*dx + dy*dy <= size*size*4) {
+                glVertex2i(x + dx, y + dy);
+            }
+        }
+        glEnd();
     }
-    glEnd();
+    
     glPointSize(size);
 }
 
@@ -262,6 +314,46 @@ void motion(int x, int y) {
         
         rubber_x = x;
         rubber_y = y;
+    } else if (selecting && draw_mode == SELECT) {
+        /* Draw selection rectangle */
+        glEnable(GL_COLOR_LOGIC_OP);
+        glLogicOp(GL_XOR);
+        glColor3f(1.0, 1.0, 1.0);
+        glBegin(GL_LINE_LOOP);
+        glVertex2i(select_x1, wh - select_y1);
+        glVertex2i(select_x1, wh - select_y2);
+        glVertex2i(select_x2, wh - select_y2);
+        glVertex2i(select_x2, wh - select_y1);
+        glEnd();
+        glLogicOp(GL_COPY);
+        glDisable(GL_COLOR_LOGIC_OP);
+        
+        select_x2 = x;
+        select_y2 = y;
+        
+        glEnable(GL_COLOR_LOGIC_OP);
+        glLogicOp(GL_XOR);
+        glColor3f(1.0, 1.0, 1.0);
+        glBegin(GL_LINE_LOOP);
+        glVertex2i(select_x1, wh - select_y1);
+        glVertex2i(select_x1, wh - select_y2);
+        glVertex2i(select_x2, wh - select_y2);
+        glVertex2i(select_x2, wh - select_y1);
+        glEnd();
+        glLogicOp(GL_COPY);
+        glDisable(GL_COLOR_LOGIC_OP);
+        glFlush();
+    } else if (brush_drawing && draw_mode == DRAW_POINTS) {
+        /* Continuous brush drawing */
+        glColor3f(r, g, b);
+        int y_inv = wh - y;
+        glBegin(GL_POLYGON);
+        glVertex2f(x + size, y_inv + size);
+        glVertex2f(x - size, y_inv + size);
+        glVertex2f(x - size, y_inv - size);
+        glVertex2f(x + size, y_inv - size);
+        glEnd();
+        glFlush();
     } else if (spray_mode) {
         drawSpray(x, y);
         glFlush();
@@ -291,6 +383,9 @@ void mouse(int btn, int state, int x, int y) {
                 spray_mode = (where == SPRAY);
                 eraser_mode = (where == ERASER);
                 polygon_mode = (where == POLYGON);
+                fill_bucket_mode = (where == FILL_BUCKET);
+                eyedropper_mode = (where == EYEDROPPER);
+                select_mode = (where == SELECT);
                 rubberband = 0;
             }
         } else {
@@ -391,8 +486,9 @@ void mouse(int btn, int state, int x, int y) {
                     break;
                     
                 case (DRAW_POINTS):
-                    /* Random color */
-                    glColor3f((float)rand()/RAND_MAX, (float)rand()/RAND_MAX, (float)rand()/RAND_MAX);
+                    /* Start brush drawing */
+                    brush_drawing = 1;
+                    glColor3f(r, g, b);
                     y = wh - y;
                     glBegin(GL_POLYGON);
                     glVertex2f(x + size, y + size);
@@ -442,11 +538,95 @@ void mouse(int btn, int state, int x, int y) {
                     
                 case (ERASER):
                     drawEraser(x, y);
+                    
+                    /* Save eraser stroke to history */
+                    if (history_count < MAX_HISTORY) {
+                        history[history_count].type = ERASER;
+                        history[history_count].x1 = x;
+                        history[history_count].y1 = wh - y;
+                        history[history_count].size = size;
+                        history_count++;
+                        redo_count = 0;
+                    }
+                    
                     glFlush();
+                    break;
+                    
+                case (FILL_BUCKET):
+                    /* Flood fill at clicked position */
+                    if (x >= 0 && x < ww && y >= 0 && y < wh - ww / 13) {
+                        GLubyte pixel[3];
+                        glReadPixels(x, wh - y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
+                        float old_r = pixel[0] / 255.0f;
+                        float old_g = pixel[1] / 255.0f;
+                        float old_b = pixel[2] / 255.0f;
+                        
+                        /* Check if different color */
+                        float tolerance = 0.02f;
+                        if (fabs(old_r - r) > tolerance || fabs(old_g - g) > tolerance || fabs(old_b - b) > tolerance) {
+                            scanlineFill(x, wh - y, old_r, old_g, old_b);
+                        }
+                    }
+                    break;
+                    
+                case (EYEDROPPER):
+                    /* Pick color from clicked position */
+                    if (x >= 0 && x < ww && y >= 0 && y < wh) {
+                        GLubyte pixel[3];
+                        glReadPixels(x, wh - y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
+                        r = pixel[0] / 255.0f;
+                        g = pixel[1] / 255.0f;
+                        b = pixel[2] / 255.0f;
+                        display();  /* Update color preview */
+                    }
+                    break;
+                    
+                case (SELECT):
+                    /* Start selection */
+                    selecting = 1;
+                    select_x1 = x;
+                    select_y1 = y;
+                    select_x2 = x;
+                    select_y2 = y;
                     break;
             }
         }
     } else if (btn == GLUT_LEFT_BUTTON && state == GLUT_UP) {
+        /* Stop selection */
+        if (selecting && draw_mode == SELECT) {
+            selecting = 0;
+            /* Clear selection rectangle */
+            glEnable(GL_COLOR_LOGIC_OP);
+            glLogicOp(GL_XOR);
+            glColor3f(1.0, 1.0, 1.0);
+            glBegin(GL_LINE_LOOP);
+            glVertex2i(select_x1, wh - select_y1);
+            glVertex2i(select_x1, wh - select_y2);
+            glVertex2i(select_x2, wh - select_y2);
+            glVertex2i(select_x2, wh - select_y1);
+            glEnd();
+            glLogicOp(GL_COPY);
+            glDisable(GL_COLOR_LOGIC_OP);
+            glFlush();
+        }
+        
+        /* Stop brush drawing and save to history */
+        if (brush_drawing && draw_mode == DRAW_POINTS) {
+            brush_drawing = 0;
+            /* Save brush stroke to history (simplified) */
+            if (history_count < MAX_HISTORY) {
+                history[history_count].type = DRAW_POINTS;
+                history[history_count].x1 = x;
+                history[history_count].y1 = wh - y;
+                history[history_count].r = r;
+                history[history_count].g = g;
+                history[history_count].b = b;
+                history[history_count].size = size;
+                history_count++;
+                redo_count = 0;
+            }
+        }
+        
         /* Release: complete rubberband drawing */
         if (rubberband && (draw_mode == RECTANGLE || draw_mode == CIRCLE)) {
             /* Clear final rubberband */
@@ -529,28 +709,35 @@ void mouse(int btn, int state, int x, int y) {
 /* Select toolbar item */
 int pick(int x, int y) {
     y = wh - y;
-    if (y < wh - ww / 12)
+    int btn_width = ww / 13;  /* 13 buttons total (12 tools + 1 color preview) */
+    if (y < wh - btn_width)
         return 0;
-    else if (x < ww / 12)
+    else if (x < btn_width)
         return LINE;
-    else if (x < 2 * ww / 12)
+    else if (x < 2 * btn_width)
         return RECTANGLE;
-    else if (x < 3 * ww / 12)
+    else if (x < 3 * btn_width)
         return TRIANGLE;
-    else if (x < 4 * ww / 12)
+    else if (x < 4 * btn_width)
         return DRAW_POINTS;
-    else if (x < 5 * ww / 12)
+    else if (x < 5 * btn_width)
         return DRAW_TEXT;
-    else if (x < 6 * ww / 12)
+    else if (x < 6 * btn_width)
         return POLYGON;
-    else if (x < 7 * ww / 12)
+    else if (x < 7 * btn_width)
         return CIRCLE;
-    else if (x < 8 * ww / 12)
+    else if (x < 8 * btn_width)
         return ERASER;
-    else if (x < 9 * ww / 12)
+    else if (x < 9 * btn_width)
         return SPRAY;
+    else if (x < 10 * btn_width)
+        return FILL_BUCKET;
+    else if (x < 11 * btn_width)
+        return EYEDROPPER;
+    else if (x < 12 * btn_width)
+        return SELECT;
     else
-        return 0;
+        return 0;  /* Last button is color preview, not clickable */
 }
 
 /* Save drawing */
@@ -580,6 +767,117 @@ void loadDrawing(const char* filename) {
         /* Redraw all items */
         redrawHistory();
         printf("Drawing loaded from %s\n", filename);
+    }
+}
+
+/* Scanline flood fill - more efficient than stack-based */
+void scanlineFill(int x, int y, float old_r, float old_g, float old_b) {
+    stackTop = -1;
+    float tolerance = 0.02f;
+    int maxY = wh - ww / 13;  /* Don't fill toolbar area */
+    
+    /* Create visited array to prevent infinite loops */
+    static unsigned char *visited = NULL;
+    if (visited == NULL) {
+        visited = (unsigned char*)calloc(ww * wh, sizeof(unsigned char));
+    }
+    memset(visited, 0, ww * wh * sizeof(unsigned char));
+    
+    /* Push starting point */
+    if (stackTop < STACK_SIZE - 1) {
+        fillStack[++stackTop].x = x;
+        fillStack[stackTop].y = y;
+    }
+    
+    glColor3f(r, g, b);
+    glBegin(GL_POINTS);
+    
+    while (stackTop >= 0) {
+        Point p = fillStack[stackTop--];
+        int px = p.x;
+        int py = p.y;
+        
+        if (px < 0 || px >= ww || py < 0 || py >= maxY) continue;
+        
+        /* Check if already visited */
+        int idx = py * ww + px;
+        if (visited[idx]) continue;
+        visited[idx] = 1;
+        
+        GLubyte pixel[3];
+        glReadPixels(px, py, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, pixel);
+        float curr_r = pixel[0] / 255.0f;
+        float curr_g = pixel[1] / 255.0f;
+        float curr_b = pixel[2] / 255.0f;
+        
+        /* Check if color matches */
+        if (fabs(curr_r - old_r) > tolerance || 
+            fabs(curr_g - old_g) > tolerance || 
+            fabs(curr_b - old_b) > tolerance) {
+            continue;
+        }
+        
+        /* Paint pixel */
+        glVertex2i(px, py);
+        
+        /* Add 4-way neighbors to stack */
+        if (stackTop < STACK_SIZE - 4) {
+            if (px + 1 < ww) {
+                fillStack[++stackTop].x = px + 1;
+                fillStack[stackTop].y = py;
+            }
+            if (px - 1 >= 0) {
+                fillStack[++stackTop].x = px - 1;
+                fillStack[stackTop].y = py;
+            }
+            if (py + 1 < maxY) {
+                fillStack[++stackTop].x = px;
+                fillStack[stackTop].y = py + 1;
+            }
+            if (py - 1 >= 0) {
+                fillStack[++stackTop].x = px;
+                fillStack[stackTop].y = py - 1;
+            }
+        }
+    }
+    
+    glEnd();
+    glFlush();
+}
+
+/* Simple PPM to JPG conversion using external command (if available) */
+/* Or save as PPM which can be converted later */
+void exportImageJPG(const char* filename) {
+    int width = ww;
+    int height = wh - ww / 12;  /* Exclude toolbar */
+    
+    unsigned char* pixels = (unsigned char*)malloc(3 * width * height);
+    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+    
+    /* Save as PPM first (simple format) */
+    char ppmFilename[256];
+    sprintf(ppmFilename, "%s.ppm", filename);
+    
+    FILE* fp = fopen(ppmFilename, "wb");
+    if (fp) {
+        fprintf(fp, "P6\n%d %d\n255\n", width, height);
+        
+        /* PPM stores top-to-bottom, OpenGL reads bottom-to-top */
+        for (int y = height - 1; y >= 0; y--) {
+            for (int x = 0; x < width; x++) {
+                int idx = (y * width + x) * 3;
+                fputc(pixels[idx], fp);     /* R */
+                fputc(pixels[idx + 1], fp); /* G */
+                fputc(pixels[idx + 2], fp); /* B */
+            }
+        }
+        
+        fclose(fp);
+        free(pixels);
+        printf("Image exported to %s (PPM format)\n", ppmFilename);
+        printf("Note: You can convert PPM to JPG using external tools\n");
+    } else {
+        free(pixels);
     }
 }
 
@@ -627,6 +925,41 @@ void redrawHistory(void) {
                         glVertex2f(history[i].x1 + radius * cos(angle), 
                                   wh - history[i].y1 + radius * sin(angle));
                     }
+                    glEnd();
+                }
+                break;
+                
+            case DRAW_POINTS:
+                {
+                    float s = history[i].size;
+                    glBegin(GL_POLYGON);
+                    glVertex2f(history[i].x1 + s, history[i].y1 + s);
+                    glVertex2f(history[i].x1 - s, history[i].y1 + s);
+                    glVertex2f(history[i].x1 - s, history[i].y1 - s);
+                    glVertex2f(history[i].x1 + s, history[i].y1 - s);
+                    glEnd();
+                }
+                break;
+                
+            case SPRAY:
+                glPointSize(1.0);
+                glBegin(GL_POINTS);
+                for (int j = 0; j < history[i].point_count; j++) {
+                    glVertex2i(history[i].points[j][0], history[i].points[j][1]);
+                }
+                glEnd();
+                glPointSize(size);
+                break;
+                
+            case ERASER:
+                {
+                    float s = history[i].size;
+                    glColor3f(0.8, 0.8, 0.8);  /* Background color */
+                    glBegin(GL_POLYGON);
+                    glVertex2f(history[i].x1 + s, history[i].y1 + s);
+                    glVertex2f(history[i].x1 - s, history[i].y1 + s);
+                    glVertex2f(history[i].x1 - s, history[i].y1 - s);
+                    glVertex2f(history[i].x1 + s, history[i].y1 - s);
                     glEnd();
                 }
                 break;
@@ -822,17 +1155,17 @@ void display(void) {
     glPushAttrib(GL_ALL_ATTRIB_BITS);
     
     /* Draw toolbar background */
+    int btn_width = ww / 13;  /* 13 buttons total (12 tools + 1 color preview) */
+    int btn_height = ww / 13;
     glColor3f(0.6, 0.6, 0.6);
     glBegin(GL_QUADS);
-    glVertex2i(0, wh - ww / 12);
-    glVertex2i(ww, wh - ww / 12);
+    glVertex2i(0, wh - btn_height);
+    glVertex2i(ww, wh - btn_height);
     glVertex2i(ww, wh);
     glVertex2i(0, wh);
     glEnd();
     
     /* Draw tool buttons */
-    int btn_width = ww / 12;
-    int btn_height = ww / 12;
     int start_y = wh - btn_height;
     
     /* Line button */
@@ -937,13 +1270,68 @@ void display(void) {
     glEnd();
     glPointSize(size);
     
-    /* Color preview */
-    glColor3f(r, g, b);
+    /* Fill bucket button */
+    glColor3f(1.0, 0.8, 0.6);
     screen_box(9*btn_width, start_y, btn_width);
-    
-    /* Status display */
     glColor3f(0.0, 0.0, 0.0);
-    glRasterPos2i(10, 20);
+    glBegin(GL_POLYGON);
+    glVertex2i(9*btn_width + btn_width/2, start_y + btn_height/4);
+    glVertex2i(9*btn_width + btn_width/4, start_y + 2*btn_height/3);
+    glVertex2i(9*btn_width + 3*btn_width/4, start_y + 2*btn_height/3);
+    glEnd();
+    glBegin(GL_LINES);
+    glVertex2i(9*btn_width + btn_width/2 - 5, start_y + btn_height/4);
+    glVertex2i(9*btn_width + btn_width/2 - 5, start_y + 10);
+    glEnd();
+    
+    /* Eyedropper button */
+    glColor3f(0.9, 0.9, 0.9);
+    screen_box(10*btn_width, start_y, btn_width);
+    glColor3f(0.0, 0.0, 0.0);
+    glBegin(GL_LINES);
+    glVertex2i(10*btn_width + btn_width/4, start_y + 3*btn_height/4);
+    glVertex2i(10*btn_width + 3*btn_width/4, start_y + btn_height/4);
+    glEnd();
+    glBegin(GL_LINE_LOOP);
+    glVertex2i(10*btn_width + 3*btn_width/4 - 3, start_y + btn_height/4 - 3);
+    glVertex2i(10*btn_width + 3*btn_width/4 + 3, start_y + btn_height/4 - 3);
+    glVertex2i(10*btn_width + 3*btn_width/4 + 3, start_y + btn_height/4 + 3);
+    glVertex2i(10*btn_width + 3*btn_width/4 - 3, start_y + btn_height/4 + 3);
+    glEnd();
+    
+    /* Select button */
+    glColor3f(0.7, 0.7, 1.0);
+    screen_box(11*btn_width, start_y, btn_width);
+    glColor3f(0.0, 0.0, 0.0);
+    glBegin(GL_LINE_LOOP);
+    glVertex2i(11*btn_width + btn_width/4, start_y + btn_height/4);
+    glVertex2i(11*btn_width + btn_width/4, start_y + 3*btn_height/4);
+    glVertex2i(11*btn_width + 3*btn_width/4, start_y + 3*btn_height/4);
+    glVertex2i(11*btn_width + 3*btn_width/4, start_y + btn_height/4);
+    glEnd();
+    /* Draw selection cursor */
+    glBegin(GL_LINES);
+    glVertex2i(11*btn_width + btn_width/3, start_y + btn_height/3);
+    glVertex2i(11*btn_width + 2*btn_width/3, start_y + 2*btn_height/3);
+    glVertex2i(11*btn_width + 2*btn_width/3, start_y + btn_height/3);
+    glVertex2i(11*btn_width + btn_width/3, start_y + 2*btn_height/3);
+    glEnd();
+    
+    /* Color preview - at the last position (rightmost), separate from Select */
+    glColor3f(r, g, b);
+    screen_box(12*btn_width, start_y, btn_width);
+    
+    /* Clear status area and display status */
+    glColor3f(0.8, 0.8, 0.8);
+    glBegin(GL_QUADS);
+    glVertex2i(0, 0);
+    glVertex2i(500, 0);
+    glVertex2i(500, 25);
+    glVertex2i(0, 25);
+    glEnd();
+    
+    glColor3f(0.0, 0.0, 0.0);
+    glRasterPos2i(10, 10);
     char status[100];
     sprintf(status, "Mode: %d Color: %.1f,%.1f,%.1f Size: %.1f", 
             draw_mode, r, g, b, size);
