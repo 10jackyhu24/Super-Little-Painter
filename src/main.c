@@ -81,11 +81,11 @@ int eyedropper_mode = 0;           /* Eyedropper mode */
 int brush_drawing = 0;             /* Brush continuous drawing flag */
 int select_mode = 0;               /* Select mode */
 int selecting = 0;                 /* Currently selecting */
-int select_x1, select_y1, select_x2, select_y2;  /* Selection area */
+int select_x1 = 0, select_y1 = 0, select_x2 = 0, select_y2 = 0;  /* Selection area */
 int select_moving = 0;             /* Moving selection */
-int select_offset_x, select_offset_y;  /* Selection move offset */
+int select_offset_x = 0, select_offset_y = 0;  /* Selection move offset */
 unsigned char* selection_buffer = NULL;  /* Selection buffer */
-int selection_width, selection_height;   /* Selection dimensions */
+int selection_width = 0, selection_height = 0;   /* Selection dimensions */
 
 /* Drawing history structure */
 #define MAX_HISTORY 100
@@ -281,27 +281,36 @@ void motion(int x, int y) {
         int new_x = x;
         int new_y = y;
         
-        /* Clamp to valid range */
+        /* Clamp to valid range to prevent crashes */
         if (new_x < 0) new_x = 0;
         if (new_y < 0) new_y = 0;
+        int max_y = wh - ww / 13;
         if (new_x + selection_width > ww) new_x = ww - selection_width;
-        if (new_y + selection_height > wh - ww / 13) new_y = wh - ww / 13 - selection_height;
+        if (new_y + selection_height > max_y) new_y = max_y - selection_height;
+        
+        /* Additional safety check */
+        if (new_x < 0 || new_y < 0 || selection_width <= 0 || selection_height <= 0) {
+            return;
+        }
         
         /* Redraw everything */
         redrawHistory();
         
-        /* Draw selection at new position */
-        glRasterPos2i(new_x, wh - new_y - selection_height);
-        glDrawPixels(selection_width, selection_height, GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
-        
-        /* Draw selection rectangle */
-        glColor3f(1.0, 1.0, 1.0);
-        glBegin(GL_LINE_LOOP);
-        glVertex2i(new_x, wh - new_y);
-        glVertex2i(new_x, wh - new_y - selection_height);
-        glVertex2i(new_x + selection_width, wh - new_y - selection_height);
-        glVertex2i(new_x + selection_width, wh - new_y);
-        glEnd();
+        /* Draw selection at new position with error checking */
+        int draw_y = wh - new_y - selection_height;
+        if (draw_y >= 0 && draw_y < wh && new_x >= 0 && new_x < ww) {
+            glRasterPos2i(new_x, draw_y);
+            glDrawPixels(selection_width, selection_height, GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+            
+            /* Draw selection rectangle */
+            glColor3f(1.0, 1.0, 1.0);
+            glBegin(GL_LINE_LOOP);
+            glVertex2i(new_x, wh - new_y);
+            glVertex2i(new_x, wh - new_y - selection_height);
+            glVertex2i(new_x + selection_width, wh - new_y - selection_height);
+            glVertex2i(new_x + selection_width, wh - new_y);
+            glEnd();
+        }
         
         glFlush();
         
@@ -326,6 +335,13 @@ void motion(int x, int y) {
         rubber_x = x;
         rubber_y = y;
     } else if (selecting && draw_mode == SELECT) {
+        /* Clamp coordinates to valid range */
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        int max_y = wh - ww / 13;
+        if (x >= ww) x = ww - 1;
+        if (y >= max_y) y = max_y - 1;
+        
         /* Draw selection rectangle */
         glEnable(GL_COLOR_LOGIC_OP);
         glLogicOp(GL_XOR);
@@ -708,23 +724,23 @@ void mouse(int btn, int state, int x, int y) {
                     break;
                     
                 case (SELECT):
-                    {
-                        /* Clear previous selection when starting new one */
-                        if (selection_buffer != NULL) {
-                            free(selection_buffer);
-                            selection_buffer = NULL;
-                        }
-                        selection_width = 0;
-                        selection_height = 0;
-                        
-                        /* Start selection */
-                        selecting = 1;
-                        select_x1 = x;
-                        select_y1 = y;
-                        select_x2 = x;
-                        select_y2 = y;
+                {
+                    /* Clear previous selection when starting new one */
+                    if (selection_buffer != NULL) {
+                        free(selection_buffer);
+                        selection_buffer = NULL;
                     }
-                    break;
+                    selection_width = 0;
+                    selection_height = 0;
+                    
+                    /* Start selection */
+                    selecting = 1;
+                    select_x1 = x;
+                    select_y1 = y;
+                    select_x2 = x;
+                    select_y2 = y;
+                }
+                break;
             }
         }
     } else if (btn == GLUT_LEFT_BUTTON && state == GLUT_UP) {
@@ -732,15 +748,20 @@ void mouse(int btn, int state, int x, int y) {
         if (select_moving && draw_mode == SELECT && selection_buffer != NULL) {
             select_moving = 0;
             
-            /* Calculate final position */
+            /* Calculate final position with safety checks */
             int new_x = x;
             int new_y = y;
+            int max_y = wh - ww / 13;
             
             /* Clamp to valid range */
             if (new_x < 0) new_x = 0;
             if (new_y < 0) new_y = 0;
             if (new_x + selection_width > ww) new_x = ww - selection_width;
-            if (new_y + selection_height > wh - ww / 13) new_y = wh - ww / 13 - selection_height;
+            if (new_y + selection_height > max_y) new_y = max_y - selection_height;
+            
+            /* Additional safety checks */
+            if (new_x < 0) new_x = 0;
+            if (new_y < 0) new_y = 0;
             
             /* Update selection position */
             select_x1 = new_x;
@@ -748,22 +769,31 @@ void mouse(int btn, int state, int x, int y) {
             select_x2 = new_x + selection_width;
             select_y2 = new_y + selection_height;
             
-            /* Redraw and paste selection */
+            /* Redraw and paste selection with error checking */
             redrawHistory();
-            glRasterPos2i(new_x, wh - new_y - selection_height);
-            glDrawPixels(selection_width, selection_height, GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+            
+            int draw_y = wh - new_y - selection_height;
+            if (draw_y >= 0 && draw_y < wh && new_x >= 0 && new_x + selection_width <= ww &&
+                selection_width > 0 && selection_height > 0) {
+                glRasterPos2i(new_x, draw_y);
+                glDrawPixels(selection_width, selection_height, GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+            }
             glFlush();
             
             /* Save as history item */
-            if (history_count < MAX_HISTORY) {
-                history[history_count].type = SELECT;
-                history[history_count].x1 = new_x;
-                history[history_count].y1 = new_y;
-                history[history_count].x2 = new_x + selection_width;
-                history[history_count].y2 = new_y + selection_height;
-                history[history_count].fill_data = (unsigned char*)malloc(selection_width * selection_height * 3);
-                if (history[history_count].fill_data != NULL) {
-                    memcpy(history[history_count].fill_data, selection_buffer, selection_width * selection_height * 3);
+            if (history_count < MAX_HISTORY && selection_width > 0 && selection_height > 0) {
+                int buffer_size = selection_width * selection_height * 3;
+                unsigned char* copy_buffer = (unsigned char*)malloc(buffer_size);
+                
+                if (copy_buffer != NULL) {
+                    memcpy(copy_buffer, selection_buffer, buffer_size);
+                    
+                    history[history_count].type = SELECT;
+                    history[history_count].x1 = new_x;
+                    history[history_count].y1 = new_y;
+                    history[history_count].x2 = new_x + selection_width;
+                    history[history_count].y2 = new_y + selection_height;
+                    history[history_count].fill_data = copy_buffer;
                     history[history_count].fill_width = selection_width;
                     history[history_count].fill_height = selection_height;
                     history_count++;
@@ -790,40 +820,70 @@ void mouse(int btn, int state, int x, int y) {
             glDisable(GL_COLOR_LOGIC_OP);
             glFlush();
             
-            /* Capture selected area */
+            /* Capture selected area with bounds checking */
             int min_x = select_x1 < select_x2 ? select_x1 : select_x2;
             int max_x = select_x1 > select_x2 ? select_x1 : select_x2;
             int min_y = select_y1 < select_y2 ? select_y1 : select_y2;
             int max_y = select_y1 > select_y2 ? select_y1 : select_y2;
             
+            /* Clamp to valid screen area */
+            int max_screen_y = wh - ww / 13;
+            if (min_x < 0) min_x = 0;
+            if (min_y < 0) min_y = 0;
+            if (max_x > ww) max_x = ww;
+            if (max_y > max_screen_y) max_y = max_screen_y;
+            
             selection_width = max_x - min_x;
             selection_height = max_y - min_y;
             
             if (selection_width > 0 && selection_height > 0 && 
-                min_x >= 0 && max_x < ww && min_y >= 0 && max_y < wh) {
+                min_x >= 0 && max_x <= ww && min_y >= 0 && max_y <= wh &&
+                selection_width <= ww && selection_height <= wh) {
                 
-                /* Free old buffer */
+                /* Free old buffer safely */
                 if (selection_buffer != NULL) {
                     free(selection_buffer);
                     selection_buffer = NULL;
                 }
                 
-                /* Allocate new buffer */
+                /* Allocate new buffer with size check */
                 int buffer_size = selection_width * selection_height * 3;
-                selection_buffer = (unsigned char*)malloc(buffer_size);
-                
-                if (selection_buffer != NULL) {
-                    /* Read pixels from framebuffer */
-                    glReadPixels(min_x, wh - max_y, selection_width, selection_height, 
-                                GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+                if (buffer_size > 0 && buffer_size < 100000000) {  /* Sanity check: less than 100MB */
+                    selection_buffer = (unsigned char*)malloc(buffer_size);
                     
-                    /* Update select coordinates to normalized values */
-                    select_x1 = min_x;
-                    select_y1 = min_y;
-                    select_x2 = max_x;
-                    select_y2 = max_y;
+                    if (selection_buffer != NULL) {
+                        /* Read pixels from framebuffer */
+                        int read_y = wh - max_y;
+                        if (read_y >= 0 && read_y + selection_height <= wh) {
+                            printf("Reading selection: x=%d, y=%d, w=%d, h=%d\n", min_x, read_y, selection_width, selection_height);
+                            glReadPixels(min_x, read_y, selection_width, selection_height, 
+                                        GL_RGB, GL_UNSIGNED_BYTE, selection_buffer);
+                            
+                            /* Update select coordinates to normalized values */
+                            select_x1 = min_x;
+                            select_y1 = min_y;
+                            select_x2 = max_x;
+                            select_y2 = max_y;
+                            
+                            printf("Selection captured successfully\n");
+                            printf("Ready to move or use selection\n");
+                            fflush(stdout);
+                            /* Note: Don't draw rectangle here to avoid event loop issues */
+                        } else {
+                            /* Invalid read position */
+                            printf("Invalid read position: read_y=%d, height=%d, wh=%d\n", read_y, selection_height, wh);
+                            free(selection_buffer);
+                            selection_buffer = NULL;
+                            selection_width = 0;
+                            selection_height = 0;
+                        }
+                    } else {
+                        printf("Failed to allocate selection buffer (%d bytes)\n", buffer_size);
+                        selection_width = 0;
+                        selection_height = 0;
+                    }
                 } else {
-                    printf("Failed to allocate selection buffer\n");
+                    printf("Invalid buffer size: %d\n", buffer_size);
                     selection_width = 0;
                     selection_height = 0;
                 }
@@ -1316,11 +1376,18 @@ void redrawHistory(void) {
                 break;
                 
             case SELECT:
-                /* Restore selected area */
-                if (history[i].fill_data != NULL) {
-                    glRasterPos2i(history[i].x1, wh - history[i].y1 - history[i].fill_height);
-                    glDrawPixels(history[i].fill_width, history[i].fill_height, 
-                                GL_RGB, GL_UNSIGNED_BYTE, history[i].fill_data);
+                /* Restore selected area with safety checks */
+                if (history[i].fill_data != NULL && 
+                    history[i].fill_width > 0 && history[i].fill_height > 0 &&
+                    history[i].x1 >= 0 && history[i].x1 < ww &&
+                    history[i].y1 >= 0 && history[i].y1 < wh) {
+                    
+                    int draw_y = wh - history[i].y1 - history[i].fill_height;
+                    if (draw_y >= 0 && draw_y < wh) {
+                        glRasterPos2i(history[i].x1, draw_y);
+                        glDrawPixels(history[i].fill_width, history[i].fill_height, 
+                                    GL_RGB, GL_UNSIGNED_BYTE, history[i].fill_data);
+                    }
                 }
                 break;
         }
@@ -1410,6 +1477,14 @@ void right_menu(int id) {
         glFlush();
         history_count = 0;  /* Clear history */
         redo_count = 0;     /* Clear redo stack */
+        
+        /* Free selection buffer */
+        if (selection_buffer != NULL) {
+            free(selection_buffer);
+            selection_buffer = NULL;
+        }
+        selection_width = 0;
+        selection_height = 0;
     } else if (id == 3) {
         saveDrawing("drawing.bin");
     } else if (id == 4) {
@@ -1503,6 +1578,14 @@ void key(unsigned char k, int xx, int yy) {
         glFlush();
         history_count = 0;
         redo_count = 0;
+        
+        /* Free selection buffer */
+        if (selection_buffer != NULL) {
+            free(selection_buffer);
+            selection_buffer = NULL;
+        }
+        selection_width = 0;
+        selection_height = 0;
     }
 }
 
