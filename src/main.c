@@ -60,17 +60,14 @@ void floodFill(int, int, float, float, float);
 void floodFillStack(int, int, float, float, float);
 void scanlineFill(int, int, float, float, float);
 void initBezierSurface(void);
-void displayBezierSurface(void);
+void displayBezierInMain(void);
 void displayControlWindow(void);
-void reshapeBezierSurface(int, int);
 void reshapeControlWindow(int, int);
-void mouseBezierSurface(int, int, int, int);
-void motionBezierSurface(int, int);
 void mouseControlWindow(int, int, int, int);
 void motionControlWindow(int, int);
-void keyBezierSurface(unsigned char, int, int);
-float bernstein(int, int, float);
-void computeBezierSurface(float, float, float*);
+void keyControlWindow(unsigned char, int, int);
+void computeProfilePoint(float, float*);
+void drawRevolutionSurface(void);
 
 /* Global Variables */
 GLsizei wh = 700, ww = 1300; /* Initial window size - increased to fit all buttons */
@@ -103,14 +100,13 @@ int moving_selection = 0;          /* Currently moving selection */
 int move_offset_x = 0, move_offset_y = 0;  /* Move offset from origin */
 
 /* Bezier Surface Variables */
-int bezier_surface_window = 0;     /* Bezier surface window ID */
 int control_window = 0;             /* Control window ID */
 int show_bezier = 0;                /* Show Bezier surface flag */
-float controlPoints[4][4][3];       /* 4x4 control points for Bezier surface */
+float profilePoints[7][3];          /* 7 control points for profile curve (2 cubic Bezier curves) */
 int selectedPoint = -1;             /* Currently selected control point */
-int selectedI = 0, selectedJ = 0;   /* Selected point indices */
 float rotateX = 30.0, rotateY = 45.0;  /* Rotation angles */
 int lastMouseX = 0, lastMouseY = 0; /* Last mouse position */
+int isDraggingRotation = 0;         /* Is dragging for rotation */
 
 /* Drawing history structure */
 #define MAX_HISTORY 100
@@ -301,6 +297,21 @@ void colorPicker(int x, int y) {
 
 /* Mouse motion handler (rubberband effect) */
 void motion(int x, int y) {
+    /* Handle Bezier surface rotation when it's displayed */
+    if (show_bezier && isDraggingRotation) {
+        int dx = x - lastMouseX;
+        int dy = y - lastMouseY;
+        
+        rotateY += dx * 0.5;
+        rotateX += dy * 0.5;
+        
+        lastMouseX = x;
+        lastMouseY = y;
+        
+        glutPostRedisplay();
+        return;
+    }
+    
     /* Handle moving selection */
     if (moving_selection && select_has_content) {
         int max_y = wh - ww / 13;
@@ -467,57 +478,59 @@ void mouse(int btn, int state, int x, int y) {
             y >= bezier_y && y <= bezier_y + bezier_btn_size) {
             /* Toggle Bezier surface display */
             if (!show_bezier) {
-                /* Initialize and show Bezier surface windows */
+                /* Initialize and show Bezier surface */
                 initBezierSurface();
                 show_bezier = 1;
                 
-                /* Create Bezier surface window */
-                glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
-                bezier_surface_window = glutCreateWindow("Bezier Surface");
-                glutPositionWindow(100, 100);
-                glutReshapeWindow(600, 600);
-                glEnable(GL_DEPTH_TEST);
-                glClearColor(0.0, 0.0, 0.0, 1.0);
-                glutDisplayFunc(displayBezierSurface);
-                glutReshapeFunc(reshapeBezierSurface);
-                glutMouseFunc(mouseBezierSurface);
-                glutMotionFunc(motionBezierSurface);
-                glutKeyboardFunc(keyBezierSurface);
-                
                 /* Create control window */
                 glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
-                control_window = glutCreateWindow("Bezier Surface Control");
-                glutPositionWindow(720, 100);
-                glutReshapeWindow(400, 400);
+                control_window = glutCreateWindow("Profile Control (7 Points)");
+                glutPositionWindow(100, 100);
+                glutReshapeWindow(400, 600);
                 glClearColor(0.9, 0.9, 0.9, 1.0);
                 glutDisplayFunc(displayControlWindow);
                 glutReshapeFunc(reshapeControlWindow);
                 glutMouseFunc(mouseControlWindow);
                 glutMotionFunc(motionControlWindow);
-                glutKeyboardFunc(keyBezierSurface);
+                glutKeyboardFunc(keyControlWindow);
                 
-                /* Redraw main window to show button as active */
-                glutSetWindow(1); /* Main window */
+                /* Redraw main window */
+                glutSetWindow(1);
                 display();
                 glFlush();
             } else {
-                /* Close Bezier surface windows */
-                if (bezier_surface_window) {
-                    glutDestroyWindow(bezier_surface_window);
-                    bezier_surface_window = 0;
-                }
+                /* Close control window */
                 if (control_window) {
                     glutDestroyWindow(control_window);
                     control_window = 0;
                 }
                 show_bezier = 0;
                 
-                /* Redraw main window to show button as inactive */
-                glutSetWindow(1); /* Main window */
+                /* Redraw main window */
+                glutSetWindow(1);
                 display();
                 glFlush();
             }
             return;
+        }
+        
+        /* Check if clicking in Bezier display area when Bezier is shown */
+        if (show_bezier) {
+            int centerX = ww / 2;
+            int centerY = (wh - ww/13) / 2;
+            int viewSize = (wh - ww/13) < ww ? (wh - ww/13) * 0.8 : ww * 0.6;
+            int minX = centerX - viewSize/2;
+            int maxX = centerX + viewSize/2;
+            int minY = centerY - viewSize/2;
+            int maxY = centerY + viewSize/2;
+            
+            if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
+                /* Start rotation dragging */
+                isDraggingRotation = 1;
+                lastMouseX = x;
+                lastMouseY = y;
+                return;
+            }
         }
         
         where = pick(x, y);
@@ -867,6 +880,12 @@ void mouse(int btn, int state, int x, int y) {
             }
         }
     } else if (btn == GLUT_LEFT_BUTTON && state == GLUT_UP) {
+        /* Stop Bezier rotation dragging */
+        if (isDraggingRotation) {
+            isDraggingRotation = 0;
+            return;
+        }
+        
         /* Handle moving selection completion */
         if (moving_selection && select_has_content) {
             moving_selection = 0;
@@ -1940,111 +1959,157 @@ void display(void) {
     
     glFlush();
     glPopAttrib();
-}
-
-/* Bernstein polynomial */
-float bernstein(int i, int n, float u) {
-    float binomial = 1.0;
-    for (int k = 0; k < i; k++) {
-        binomial *= (float)(n - k) / (float)(k + 1);
-    }
-    return binomial * pow(u, i) * pow(1.0 - u, n - i);
-}
-
-/* Compute point on Bezier surface */
-void computeBezierSurface(float u, float v, float* point) {
-    point[0] = point[1] = point[2] = 0.0;
     
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            float bu = bernstein(i, 3, u);
-            float bv = bernstein(j, 3, v);
-            point[0] += controlPoints[i][j][0] * bu * bv;
-            point[1] += controlPoints[i][j][1] * bu * bv;
-            point[2] += controlPoints[i][j][2] * bu * bv;
-        }
+    /* Draw Bezier surface if enabled */
+    if (show_bezier) {
+        displayBezierInMain();
     }
 }
 
-/* Initialize Bezier surface control points */
+/* Compute point on profile curve (2 cubic Bezier curves with 7 control points) */
+void computeProfilePoint(float t, float* point) {
+    /* t ranges from 0 to 1 along the profile curve */
+    /* First curve: points 0-3, Second curve: points 3-6 (point 3 is shared) */
+    
+    if (t <= 0.5) {
+        /* First cubic Bezier curve (points 0, 1, 2, 3) */
+        float u = t * 2.0;  /* Map [0, 0.5] to [0, 1] */
+        float b0 = (1-u) * (1-u) * (1-u);
+        float b1 = 3 * u * (1-u) * (1-u);
+        float b2 = 3 * u * u * (1-u);
+        float b3 = u * u * u;
+        
+        point[0] = b0 * profilePoints[0][0] + b1 * profilePoints[1][0] + 
+                   b2 * profilePoints[2][0] + b3 * profilePoints[3][0];
+        point[1] = b0 * profilePoints[0][1] + b1 * profilePoints[1][1] + 
+                   b2 * profilePoints[2][1] + b3 * profilePoints[3][1];
+    } else {
+        /* Second cubic Bezier curve (points 3, 4, 5, 6) */
+        float u = (t - 0.5) * 2.0;  /* Map [0.5, 1] to [0, 1] */
+        float b0 = (1-u) * (1-u) * (1-u);
+        float b1 = 3 * u * (1-u) * (1-u);
+        float b2 = 3 * u * u * (1-u);
+        float b3 = u * u * u;
+        
+        point[0] = b0 * profilePoints[3][0] + b1 * profilePoints[4][0] + 
+                   b2 * profilePoints[5][0] + b3 * profilePoints[6][0];
+        point[1] = b0 * profilePoints[3][1] + b1 * profilePoints[4][1] + 
+                   b2 * profilePoints[5][1] + b3 * profilePoints[6][1];
+    }
+}
+
+/* Initialize profile control points (7 points for 2 cubic Bezier curves) */
 void initBezierSurface(void) {
-    /* Initialize control points in a grid */
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            controlPoints[i][j][0] = (i - 1.5) * 2.0;
-            controlPoints[i][j][1] = (j - 1.5) * 2.0;
-            controlPoints[i][j][2] = 0.0;
-        }
+    /* Initialize 7 control points vertically arranged */
+    for (int i = 0; i < 7; i++) {
+        profilePoints[i][0] = 0.0;  /* X coordinate */
+        profilePoints[i][1] = (i - 3.0) * 1.0;  /* Y coordinate (vertical) */
+        profilePoints[i][2] = 0.0;  /* Not used initially */
     }
     
-    /* Add some initial curvature */
-    controlPoints[1][1][2] = 1.5;
-    controlPoints[1][2][2] = 1.5;
-    controlPoints[2][1][2] = 1.5;
-    controlPoints[2][2][2] = 1.5;
+    /* Add some curvature to make it interesting */
+    profilePoints[1][0] = 1.5;
+    profilePoints[2][0] = 2.0;
+    profilePoints[4][0] = 2.0;
+    profilePoints[5][0] = 1.5;
 }
 
-/* Display Bezier surface */
-void displayBezierSurface(void) {
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+/* Draw revolution surface in main window */
+void displayBezierInMain(void) {
+    /* Save current state */
+    glPushMatrix();
+    glPushAttrib(GL_ALL_ATTRIB_BITS);
+    
+    /* Set up 3D view in center of main window */
+    int centerX = ww / 2;
+    int centerY = (wh - ww/13) / 2;  /* Account for toolbar */
+    int viewSize = (wh - ww/13) < ww ? (wh - ww/13) * 0.8 : ww * 0.6;
+    
+    glViewport(centerX - viewSize/2, centerY - viewSize/2, viewSize, viewSize);
+    
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    gluPerspective(45.0, 1.0, 1.0, 100.0);
     
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     gluLookAt(0.0, 0.0, 15.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
     
+    glEnable(GL_DEPTH_TEST);
     glRotatef(rotateX, 1.0, 0.0, 0.0);
     glRotatef(rotateY, 0.0, 1.0, 0.0);
     
-    /* Draw Bezier surface */
+    /* Draw revolution surface */
+    int profileDivisions = 30;
+    int angleDivisions = 36;  /* 360 degrees / 10 = 36 divisions */
+    
     glColor3f(0.3, 0.6, 0.9);
-    int divisions = 20;
-    for (int i = 0; i < divisions; i++) {
+    glLineWidth(1.0);
+    
+    /* Draw surface using lines */
+    for (int a = 0; a < angleDivisions; a++) {
+        float angle1 = (float)a / angleDivisions * 2.0 * M_PI;
+        float angle2 = (float)(a + 1) / angleDivisions * 2.0 * M_PI;
+        
         glBegin(GL_QUAD_STRIP);
-        for (int j = 0; j <= divisions; j++) {
-            float u1 = (float)i / divisions;
-            float u2 = (float)(i + 1) / divisions;
-            float v = (float)j / divisions;
+        for (int p = 0; p <= profileDivisions; p++) {
+            float t = (float)p / profileDivisions;
+            float point[2];
+            computeProfilePoint(t, point);
             
-            float point1[3], point2[3];
-            computeBezierSurface(u1, v, point1);
-            computeBezierSurface(u2, v, point2);
+            float r = point[0];  /* Radius from Y axis */
+            float y = point[1];  /* Height */
             
-            glVertex3fv(point1);
-            glVertex3fv(point2);
+            /* First vertex at angle1 */
+            float x1 = r * cos(angle1);
+            float z1 = r * sin(angle1);
+            glVertex3f(x1, y, z1);
+            
+            /* Second vertex at angle2 */
+            float x2 = r * cos(angle2);
+            float z2 = r * sin(angle2);
+            glVertex3f(x2, y, z2);
         }
         glEnd();
     }
     
-    /* Draw control points */
-    glPointSize(8.0);
+    /* Draw profile curve in red */
     glColor3f(1.0, 0.0, 0.0);
-    glBegin(GL_POINTS);
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            glVertex3fv(controlPoints[i][j]);
-        }
+    glLineWidth(2.0);
+    glBegin(GL_LINE_STRIP);
+    for (int p = 0; p <= profileDivisions; p++) {
+        float t = (float)p / profileDivisions;
+        float point[2];
+        computeProfilePoint(t, point);
+        glVertex3f(point[0], point[1], 0.0);
     }
     glEnd();
     
-    /* Draw control mesh */
-    glColor3f(0.5, 0.5, 0.5);
-    glLineWidth(1.0);
-    for (int i = 0; i < 4; i++) {
-        glBegin(GL_LINE_STRIP);
-        for (int j = 0; j < 4; j++) {
-            glVertex3fv(controlPoints[i][j]);
-        }
-        glEnd();
+    /* Draw control points */
+    glPointSize(6.0);
+    glColor3f(1.0, 1.0, 0.0);
+    glBegin(GL_POINTS);
+    for (int i = 0; i < 7; i++) {
+        glVertex3f(profilePoints[i][0], profilePoints[i][1], 0.0);
     }
-    for (int j = 0; j < 4; j++) {
-        glBegin(GL_LINE_STRIP);
-        for (int i = 0; i < 4; i++) {
-            glVertex3fv(controlPoints[i][j]);
-        }
-        glEnd();
-    }
+    glEnd();
     
-    glutSwapBuffers();
+    /* Restore state */
+    glDisable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glPopAttrib();
+    glPopMatrix();
+    
+    /* Restore 2D viewport for rest of UI */
+    glViewport(0, 0, ww, wh);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0.0, (GLdouble)ww, 0.0, (GLdouble)wh, -1.0, 1.0);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
 }
 
 /* Display control window */
@@ -2054,86 +2119,92 @@ void displayControlWindow(void) {
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     
-    /* Draw control point grid (top view) */
-    glColor3f(0.8, 0.8, 0.8);
+    /* Draw background */
+    glColor3f(0.9, 0.9, 0.9);
     glBegin(GL_QUADS);
-    glVertex2f(-8.0, -8.0);
-    glVertex2f(8.0, -8.0);
-    glVertex2f(8.0, 8.0);
-    glVertex2f(-8.0, 8.0);
+    glVertex2f(-5.0, -5.0);
+    glVertex2f(5.0, -5.0);
+    glVertex2f(5.0, 5.0);
+    glVertex2f(-5.0, 5.0);
     glEnd();
     
     /* Draw grid lines */
-    glColor3f(0.6, 0.6, 0.6);
+    glColor3f(0.7, 0.7, 0.7);
     glLineWidth(1.0);
-    for (int i = -8; i <= 8; i += 2) {
+    for (int i = -4; i <= 4; i++) {
         glBegin(GL_LINES);
-        glVertex2f(i, -8.0);
-        glVertex2f(i, 8.0);
-        glVertex2f(-8.0, i);
-        glVertex2f(8.0, i);
+        glVertex2f(i, -5.0);
+        glVertex2f(i, 5.0);
         glEnd();
     }
     
-    /* Draw control mesh (top view projection) */
-    glColor3f(0.3, 0.3, 0.3);
+    /* Draw Y axis (center line) */
+    glColor3f(0.0, 0.0, 0.0);
     glLineWidth(2.0);
-    for (int i = 0; i < 4; i++) {
-        glBegin(GL_LINE_STRIP);
-        for (int j = 0; j < 4; j++) {
-            glVertex2f(controlPoints[i][j][0], controlPoints[i][j][1]);
-        }
-        glEnd();
+    glBegin(GL_LINES);
+    glVertex2f(0.0, -5.0);
+    glVertex2f(0.0, 5.0);
+    glEnd();
+    
+    /* Draw profile curve */
+    glColor3f(0.0, 0.5, 1.0);
+    glLineWidth(2.0);
+    glBegin(GL_LINE_STRIP);
+    for (int i = 0; i <= 50; i++) {
+        float t = (float)i / 50.0;
+        float point[2];
+        computeProfilePoint(t, point);
+        glVertex2f(point[0], point[1]);
     }
-    for (int j = 0; j < 4; j++) {
-        glBegin(GL_LINE_STRIP);
-        for (int i = 0; i < 4; i++) {
-            glVertex2f(controlPoints[i][j][0], controlPoints[i][j][1]);
-        }
-        glEnd();
+    glEnd();
+    
+    /* Draw connecting lines between control points */
+    glColor3f(0.5, 0.5, 0.5);
+    glLineWidth(1.0);
+    glBegin(GL_LINE_STRIP);
+    for (int i = 0; i < 7; i++) {
+        glVertex2f(profilePoints[i][0], profilePoints[i][1]);
     }
+    glEnd();
     
     /* Draw control points */
-    glPointSize(10.0);
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            if (selectedPoint >= 0 && selectedI == i && selectedJ == j) {
-                glColor3f(1.0, 1.0, 0.0); /* Selected point in yellow */
-            } else {
-                /* Color based on Z height */
-                float z = controlPoints[i][j][2];
-                glColor3f(0.0, 0.5 + z * 0.2, 1.0 - z * 0.2);
-            }
-            glBegin(GL_POINTS);
-            glVertex2f(controlPoints[i][j][0], controlPoints[i][j][1]);
-            glEnd();
+    glPointSize(12.0);
+    for (int i = 0; i < 7; i++) {
+        if (selectedPoint == i) {
+            glColor3f(1.0, 1.0, 0.0); /* Selected point in yellow */
+        } else if (i == 0 || i == 6) {
+            glColor3f(1.0, 0.0, 0.0); /* End points in red */
+        } else if (i == 3) {
+            glColor3f(0.0, 1.0, 0.0); /* Middle point (shared) in green */
+        } else {
+            glColor3f(0.0, 0.0, 1.0); /* Other points in blue */
         }
+        glBegin(GL_POINTS);
+        glVertex2f(profilePoints[i][0], profilePoints[i][1]);
+        glEnd();
     }
     
     /* Draw instructions */
     glColor3f(0.0, 0.0, 0.0);
-    glRasterPos2f(-7.5, 7.0);
-    const char* text1 = "Drag points to adjust surface";
+    glRasterPos2f(-4.8, 4.5);
+    const char* text1 = "7 Control Points (2 Cubic Bezier Curves)";
     for (int i = 0; text1[i] != '\0'; i++) {
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, text1[i]);
     }
     
-    glRasterPos2f(-7.5, 6.3);
-    const char* text2 = "Use +/- keys to adjust Z height";
+    glRasterPos2f(-4.8, 4.0);
+    const char* text2 = "Drag points to adjust profile curve";
     for (int i = 0; text2[i] != '\0'; i++) {
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, text2[i]);
     }
     
+    glRasterPos2f(-4.8, 3.5);
+    const char* text3 = "Curve rotates 360 deg to form surface";
+    for (int i = 0; text3[i] != '\0'; i++) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, text3[i]);
+    }
+    
     glutSwapBuffers();
-}
-
-/* Reshape Bezier surface window */
-void reshapeBezierSurface(int w, int h) {
-    glViewport(0, 0, w, h);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    gluPerspective(45.0, (float)w / (float)h, 1.0, 100.0);
-    glMatrixMode(GL_MODELVIEW);
 }
 
 /* Reshape control window */
@@ -2141,32 +2212,8 @@ void reshapeControlWindow(int w, int h) {
     glViewport(0, 0, w, h);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    glOrtho(-8.0, 8.0, -8.0, 8.0, -1.0, 1.0);
+    glOrtho(-5.0, 5.0, -5.0, 5.0, -1.0, 1.0);
     glMatrixMode(GL_MODELVIEW);
-}
-
-/* Mouse handler for Bezier surface window */
-void mouseBezierSurface(int button, int state, int x, int y) {
-    if (button == GLUT_LEFT_BUTTON) {
-        if (state == GLUT_DOWN) {
-            lastMouseX = x;
-            lastMouseY = y;
-        }
-    }
-}
-
-/* Motion handler for Bezier surface window */
-void motionBezierSurface(int x, int y) {
-    int dx = x - lastMouseX;
-    int dy = y - lastMouseY;
-    
-    rotateY += dx * 0.5;
-    rotateX += dy * 0.5;
-    
-    lastMouseX = x;
-    lastMouseY = y;
-    
-    glutPostRedisplay();
 }
 
 /* Mouse handler for control window */
@@ -2176,31 +2223,25 @@ void mouseControlWindow(int button, int state, int x, int y) {
             /* Convert screen coordinates to world coordinates */
             int width = glutGet(GLUT_WINDOW_WIDTH);
             int height = glutGet(GLUT_WINDOW_HEIGHT);
-            float wx = ((float)x / width) * 16.0 - 8.0;
-            float wy = 8.0 - ((float)y / height) * 16.0;
+            float wx = ((float)x / width) * 10.0 - 5.0;
+            float wy = 5.0 - ((float)y / height) * 10.0;
             
             /* Find nearest control point */
-            float minDist = 0.5;
+            float minDist = 0.3;
             selectedPoint = -1;
-            for (int i = 0; i < 4; i++) {
-                for (int j = 0; j < 4; j++) {
-                    float dx = wx - controlPoints[i][j][0];
-                    float dy = wy - controlPoints[i][j][1];
-                    float dist = sqrt(dx * dx + dy * dy);
-                    if (dist < minDist) {
-                        minDist = dist;
-                        selectedPoint = i * 4 + j;
-                        selectedI = i;
-                        selectedJ = j;
-                    }
+            for (int i = 0; i < 7; i++) {
+                float dx = wx - profilePoints[i][0];
+                float dy = wy - profilePoints[i][1];
+                float dist = sqrt(dx * dx + dy * dy);
+                if (dist < minDist) {
+                    minDist = dist;
+                    selectedPoint = i;
                 }
             }
             
-            glutSetWindow(control_window);
             glutPostRedisplay();
         } else if (state == GLUT_UP) {
             selectedPoint = -1;
-            glutSetWindow(control_window);
             glutPostRedisplay();
         }
     }
@@ -2212,55 +2253,46 @@ void motionControlWindow(int x, int y) {
         /* Convert screen coordinates to world coordinates */
         int width = glutGet(GLUT_WINDOW_WIDTH);
         int height = glutGet(GLUT_WINDOW_HEIGHT);
-        float wx = ((float)x / width) * 16.0 - 8.0;
-        float wy = 8.0 - ((float)y / height) * 16.0;
+        float wx = ((float)x / width) * 10.0 - 5.0;
+        float wy = 5.0 - ((float)y / height) * 10.0;
         
         /* Clamp to bounds */
-        if (wx < -8.0) wx = -8.0;
-        if (wx > 8.0) wx = 8.0;
-        if (wy < -8.0) wy = -8.0;
-        if (wy > 8.0) wy = 8.0;
+        if (wx < 0.0) wx = 0.0;  /* Keep X >= 0 for revolution surface */
+        if (wx > 5.0) wx = 5.0;
+        if (wy < -5.0) wy = -5.0;
+        if (wy > 5.0) wy = 5.0;
         
         /* Update control point position */
-        controlPoints[selectedI][selectedJ][0] = wx;
-        controlPoints[selectedI][selectedJ][1] = wy;
+        profilePoints[selectedPoint][0] = wx;
+        profilePoints[selectedPoint][1] = wy;
         
-        /* Update both windows */
-        glutSetWindow(control_window);
+        /* Update control window */
         glutPostRedisplay();
-        glutSetWindow(bezier_surface_window);
+        
+        /* Update main window */
+        glutSetWindow(1);
         glutPostRedisplay();
     }
 }
 
-/* Keyboard handler for Bezier surface window */
-void keyBezierSurface(unsigned char key, int x, int y) {
-    if (key == '+' || key == '=') {
-        if (selectedPoint >= 0) {
-            controlPoints[selectedI][selectedJ][2] += 0.2;
-            glutSetWindow(control_window);
-            glutPostRedisplay();
-            glutSetWindow(bezier_surface_window);
-            glutPostRedisplay();
-        }
-    } else if (key == '-' || key == '_') {
-        if (selectedPoint >= 0) {
-            controlPoints[selectedI][selectedJ][2] -= 0.2;
-            glutSetWindow(control_window);
-            glutPostRedisplay();
-            glutSetWindow(bezier_surface_window);
-            glutPostRedisplay();
-        }
-    } else if (key == 27) { /* ESC key */
-        if (bezier_surface_window) {
-            glutDestroyWindow(bezier_surface_window);
-            bezier_surface_window = 0;
-        }
+/* Keyboard handler for control window */
+void keyControlWindow(unsigned char key, int x, int y) {
+    if (key == 27) { /* ESC key */
         if (control_window) {
             glutDestroyWindow(control_window);
             control_window = 0;
         }
         show_bezier = 0;
+        
+        /* Update main window */
+        glutSetWindow(1);
+        display();
+    } else if (key == 'r' || key == 'R') {
+        /* Reset rotation */
+        rotateX = 30.0;
+        rotateY = 45.0;
+        glutSetWindow(1);
+        glutPostRedisplay();
     }
 }
 
