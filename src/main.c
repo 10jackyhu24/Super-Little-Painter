@@ -100,6 +100,7 @@ int moving_selection = 0;          /* Currently moving selection */
 int move_offset_x = 0, move_offset_y = 0;  /* Move offset from origin */
 
 /* Bezier Surface Variables */
+int main_window = 0;                /* Main window ID */
 int control_window = 0;             /* Control window ID */
 int show_bezier = 0;                /* Show Bezier surface flag */
 float profilePoints[7][3];          /* 7 control points for profile curve (2 cubic Bezier curves) */
@@ -107,6 +108,7 @@ int selectedPoint = -1;             /* Currently selected control point */
 float rotateX = 30.0, rotateY = 45.0;  /* Rotation angles */
 int lastMouseX = 0, lastMouseY = 0; /* Last mouse position */
 int isDraggingRotation = 0;         /* Is dragging for rotation */
+int renderMode = 0;                 /* 0 = Wireframe, 1 = Shaded */
 
 /* Drawing history structure */
 #define MAX_HISTORY 100
@@ -308,6 +310,8 @@ void motion(int x, int y) {
         lastMouseX = x;
         lastMouseY = y;
         
+        /* Make sure we're updating the main window */
+        glutSetWindow(main_window);
         glutPostRedisplay();
         return;
     }
@@ -495,7 +499,7 @@ void mouse(int btn, int state, int x, int y) {
                 glutKeyboardFunc(keyControlWindow);
                 
                 /* Redraw main window */
-                glutSetWindow(1);
+                glutSetWindow(main_window);
                 display();
                 glFlush();
             } else {
@@ -507,7 +511,7 @@ void mouse(int btn, int state, int x, int y) {
                 show_bezier = 0;
                 
                 /* Redraw main window */
-                glutSetWindow(1);
+                glutSetWindow(main_window);
                 display();
                 glFlush();
             }
@@ -1963,13 +1967,14 @@ void display(void) {
         glutBitmapCharacter(GLUT_BITMAP_9_BY_15, status[i]);
     }
     
-    glFlush();
     glPopAttrib();
     
     /* Draw Bezier surface if enabled */
     if (show_bezier) {
         displayBezierInMain();
     }
+    
+    glFlush();
 }
 
 /* Compute point on profile curve (2 cubic Bezier curves with 7 control points) */
@@ -2051,51 +2056,148 @@ void displayBezierInMain(void) {
     int profileDivisions = 30;
     int angleDivisions = 36;  /* 360 degrees / 10 = 36 divisions */
     
-    glColor3f(0.3, 0.6, 0.9);
-    glLineWidth(1.0);
-    
-    /* Draw surface as wireframe */
-    for (int a = 0; a < angleDivisions; a++) {
-        float angle1 = (float)a / angleDivisions * 2.0 * M_PI;
-        float angle2 = (float)(a + 1) / angleDivisions * 2.0 * M_PI;
+    if (renderMode == 0) {
+        /* Wireframe mode */
+        glColor3f(0.3, 0.6, 0.9);
+        glLineWidth(1.0);
         
-        glBegin(GL_LINE_STRIP);
-        for (int p = 0; p <= profileDivisions; p++) {
+        /* Draw meridian lines (along profile) */
+        for (int a = 0; a < angleDivisions; a++) {
+            float angle = (float)a / angleDivisions * 2.0 * M_PI;
+            
+            glBegin(GL_LINE_STRIP);
+            for (int p = 0; p <= profileDivisions; p++) {
+                float t = (float)p / profileDivisions;
+                float point[2];
+                computeProfilePoint(t, point);
+                
+                float r = point[0];  /* Radius from Y axis */
+                float y = point[1];  /* Height */
+                
+                float x = r * cos(angle);
+                float z = r * sin(angle);
+                glVertex3f(x, y, z);
+            }
+            glEnd();
+        }
+        
+        /* Draw latitude rings */
+        for (int p = 0; p <= profileDivisions; p += 2) {
             float t = (float)p / profileDivisions;
             float point[2];
             computeProfilePoint(t, point);
             
-            float r = point[0];  /* Radius from Y axis */
-            float y = point[1];  /* Height */
+            float r = point[0];
+            float y = point[1];
             
-            /* Vertex at angle1 */
-            float x1 = r * cos(angle1);
-            float z1 = r * sin(angle1);
-            glVertex3f(x1, y, z1);
+            glBegin(GL_LINE_LOOP);
+            for (int a = 0; a < angleDivisions; a++) {
+                float angle = (float)a / angleDivisions * 2.0 * M_PI;
+                float x = r * cos(angle);
+                float z = r * sin(angle);
+                glVertex3f(x, y, z);
+            }
+            glEnd();
         }
-        glEnd();
-    }
-    
-    /* Draw profile rings */
-    for (int p = 0; p <= profileDivisions; p += 2) {
-        float t = (float)p / profileDivisions;
-        float point[2];
-        computeProfilePoint(t, point);
+    } else {
+        /* Shaded mode with lighting */
+        glEnable(GL_LIGHTING);
+        glEnable(GL_LIGHT0);
+        glEnable(GL_COLOR_MATERIAL);
+        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
         
-        float r = point[0];
-        float y = point[1];
+        /* Set up light */
+        GLfloat light_position[] = { 5.0, 10.0, 10.0, 1.0 };
+        GLfloat light_ambient[] = { 0.3, 0.3, 0.3, 1.0 };
+        GLfloat light_diffuse[] = { 0.8, 0.8, 0.8, 1.0 };
+        GLfloat light_specular[] = { 1.0, 1.0, 1.0, 1.0 };
+        glLightfv(GL_LIGHT0, GL_POSITION, light_position);
+        glLightfv(GL_LIGHT0, GL_AMBIENT, light_ambient);
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, light_diffuse);
+        glLightfv(GL_LIGHT0, GL_SPECULAR, light_specular);
         
-        glBegin(GL_LINE_LOOP);
+        /* Set material properties */
+        GLfloat mat_ambient[] = { 0.3, 0.5, 0.8, 1.0 };
+        GLfloat mat_diffuse[] = { 0.4, 0.6, 0.9, 1.0 };
+        GLfloat mat_specular[] = { 1.0, 1.0, 1.0, 1.0 };
+        GLfloat mat_shininess[] = { 50.0 };
+        glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, mat_ambient);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, mat_diffuse);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, mat_specular);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SHININESS, mat_shininess);
+        
+        glShadeModel(GL_SMOOTH);
+        
+        /* Draw surface with normals */
         for (int a = 0; a < angleDivisions; a++) {
-            float angle = (float)a / angleDivisions * 2.0 * M_PI;
-            float x = r * cos(angle);
-            float z = r * sin(angle);
-            glVertex3f(x, y, z);
+            float angle1 = (float)a / angleDivisions * 2.0 * M_PI;
+            float angle2 = (float)(a + 1) / angleDivisions * 2.0 * M_PI;
+            
+            glBegin(GL_QUAD_STRIP);
+            for (int p = 0; p <= profileDivisions; p++) {
+                float t = (float)p / profileDivisions;
+                float point[2];
+                computeProfilePoint(t, point);
+                
+                float r = point[0];
+                float y = point[1];
+                
+                /* Calculate tangent for normal (approximate) */
+                float dt = 0.01;
+                float t1 = t - dt;
+                float t2 = t + dt;
+                if (t1 < 0.0) t1 = 0.0;
+                if (t2 > 1.0) t2 = 1.0;
+                
+                float point1[2], point2[2];
+                computeProfilePoint(t1, point1);
+                computeProfilePoint(t2, point2);
+                
+                float dr = point2[0] - point1[0];
+                float dy_local = point2[1] - point1[1];
+                
+                /* Normal vector for surface of revolution */
+                float nx1 = dy_local * cos(angle1);
+                float ny = dr;
+                float nz1 = dy_local * sin(angle1);
+                float len1 = sqrt(nx1*nx1 + ny*ny + nz1*nz1);
+                if (len1 > 0.0001) {
+                    nx1 /= len1;
+                    ny /= len1;
+                    nz1 /= len1;
+                }
+                
+                float nx2 = dy_local * cos(angle2);
+                float nz2 = dy_local * sin(angle2);
+                float len2 = sqrt(nx2*nx2 + ny*ny + nz2*nz2);
+                if (len2 > 0.0001) {
+                    nx2 /= len2;
+                    ny /= len2;
+                    nz2 /= len2;
+                }
+                
+                /* First vertex at angle1 */
+                float x1 = r * cos(angle1);
+                float z1 = r * sin(angle1);
+                glNormal3f(nx1, ny, nz1);
+                glVertex3f(x1, y, z1);
+                
+                /* Second vertex at angle2 */
+                float x2 = r * cos(angle2);
+                float z2 = r * sin(angle2);
+                glNormal3f(nx2, ny, nz2);
+                glVertex3f(x2, y, z2);
+            }
+            glEnd();
         }
-        glEnd();
+        
+        glDisable(GL_LIGHTING);
+        glDisable(GL_LIGHT0);
+        glDisable(GL_COLOR_MATERIAL);
     }
     
     /* Draw profile curve in red */
+    glDisable(GL_LIGHTING);
     glColor3f(1.0, 0.0, 0.0);
     glLineWidth(3.0);
     glBegin(GL_LINE_STRIP);
@@ -2225,6 +2327,43 @@ void displayControlWindow(void) {
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, text3[i]);
     }
     
+    /* Draw mode toggle button */
+    float buttonX = -4.8;
+    float buttonY = -4.5;
+    float buttonW = 2.5;
+    float buttonH = 0.5;
+    
+    /* Button background */
+    if (renderMode == 0) {
+        glColor3f(0.4, 0.4, 0.8);  /* Blue for wireframe */
+    } else {
+        glColor3f(0.8, 0.6, 0.2);  /* Gold for shaded */
+    }
+    glBegin(GL_QUADS);
+    glVertex2f(buttonX, buttonY);
+    glVertex2f(buttonX + buttonW, buttonY);
+    glVertex2f(buttonX + buttonW, buttonY + buttonH);
+    glVertex2f(buttonX, buttonY + buttonH);
+    glEnd();
+    
+    /* Button border */
+    glColor3f(0.2, 0.2, 0.2);
+    glLineWidth(2.0);
+    glBegin(GL_LINE_LOOP);
+    glVertex2f(buttonX, buttonY);
+    glVertex2f(buttonX + buttonW, buttonY);
+    glVertex2f(buttonX + buttonW, buttonY + buttonH);
+    glVertex2f(buttonX, buttonY + buttonH);
+    glEnd();
+    
+    /* Button label */
+    glColor3f(1.0, 1.0, 1.0);
+    glRasterPos2f(buttonX + 0.15, buttonY + 0.15);
+    const char* btnLabel = (renderMode == 0) ? "Wireframe" : "Shaded";
+    for (int i = 0; btnLabel[i] != '\0'; i++) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, btnLabel[i]);
+    }
+    
     glutSwapBuffers();
 }
 
@@ -2246,6 +2385,25 @@ void mouseControlWindow(int button, int state, int x, int y) {
             int height = glutGet(GLUT_WINDOW_HEIGHT);
             float wx = ((float)x / width) * 10.0 - 5.0;
             float wy = 5.0 - ((float)y / height) * 10.0;
+            
+            /* Check if clicked on mode toggle button */
+            float buttonX = -4.8;
+            float buttonY = -4.5;
+            float buttonW = 2.5;
+            float buttonH = 0.5;
+            
+            if (wx >= buttonX && wx <= buttonX + buttonW &&
+                wy >= buttonY && wy <= buttonY + buttonH) {
+                /* Toggle render mode */
+                renderMode = 1 - renderMode;
+                glutPostRedisplay();
+                
+                /* Also update main window */
+                glutSetWindow(main_window);
+                glutPostRedisplay();
+                glutSetWindow(control_window);
+                return;
+            }
             
             /* Find nearest control point */
             float minDist = 0.3;
@@ -2291,7 +2449,7 @@ void motionControlWindow(int x, int y) {
         glutPostRedisplay();
         
         /* Update main window */
-        glutSetWindow(1);
+        glutSetWindow(main_window);
         glutPostRedisplay();
     }
 }
@@ -2306,13 +2464,13 @@ void keyControlWindow(unsigned char key, int x, int y) {
         show_bezier = 0;
         
         /* Update main window */
-        glutSetWindow(1);
+        glutSetWindow(main_window);
         display();
     } else if (key == 'r' || key == 'R') {
         /* Reset rotation */
         rotateX = 30.0;
         rotateY = 45.0;
-        glutSetWindow(1);
+        glutSetWindow(main_window);
         glutPostRedisplay();
     }
 }
@@ -2324,7 +2482,7 @@ int main(int argc, char **argv) {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_SINGLE | GLUT_RGB | GLUT_DEPTH);  /* Add depth buffer */
     glutInitWindowSize(ww, wh);
-    glutCreateWindow("Super Paint - Midterm Project");
+    main_window = glutCreateWindow("Super Paint - Midterm Project");
     
     /* Create color menu */
     c_menu = glutCreateMenu(color_menu);
