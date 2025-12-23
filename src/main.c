@@ -14,6 +14,7 @@
 #define FILL_BUCKET 10
 #define EYEDROPPER 11
 #define SELECT 12
+#define BEZIER_SURFACE 13
 
 #include <GL/glut.h>
 #include <stdlib.h>
@@ -58,6 +59,18 @@ void redrawHistory(void);
 void floodFill(int, int, float, float, float);
 void floodFillStack(int, int, float, float, float);
 void scanlineFill(int, int, float, float, float);
+void initBezierSurface(void);
+void displayBezierSurface(void);
+void displayControlWindow(void);
+void reshapeBezierSurface(int, int);
+void reshapeControlWindow(int, int);
+void mouseBezierSurface(int, int, int, int);
+void motionBezierSurface(int, int);
+void mouseControlWindow(int, int, int, int);
+void motionControlWindow(int, int);
+void keyBezierSurface(unsigned char, int, int);
+float bernstein(int, int, float);
+void computeBezierSurface(float, float, float*);
 
 /* Global Variables */
 GLsizei wh = 700, ww = 1300; /* Initial window size - increased to fit all buttons */
@@ -88,6 +101,16 @@ int selection_width = 0, selection_height = 0;   /* Selection dimensions */
 int selection_origin_x = 0, selection_origin_y = 0;  /* Original position */
 int moving_selection = 0;          /* Currently moving selection */
 int move_offset_x = 0, move_offset_y = 0;  /* Move offset from origin */
+
+/* Bezier Surface Variables */
+int bezier_surface_window = 0;     /* Bezier surface window ID */
+int control_window = 0;             /* Control window ID */
+int show_bezier = 0;                /* Show Bezier surface flag */
+float controlPoints[4][4][3];       /* 4x4 control points for Bezier surface */
+int selectedPoint = -1;             /* Currently selected control point */
+int selectedI = 0, selectedJ = 0;   /* Selected point indices */
+float rotateX = 30.0, rotateY = 45.0;  /* Rotation angles */
+int lastMouseX = 0, lastMouseY = 0; /* Last mouse position */
 
 /* Drawing history structure */
 #define MAX_HISTORY 100
@@ -435,6 +458,68 @@ void mouse(int btn, int state, int x, int y) {
     static int brush_start = 0;
     
     if (btn == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
+        /* Check if clicking Bezier Surface button */
+        int bezier_btn_size = 80;
+        int bezier_x = ww - bezier_btn_size - 10;
+        int bezier_y = 10;
+        
+        if (x >= bezier_x && x <= bezier_x + bezier_btn_size &&
+            y >= bezier_y && y <= bezier_y + bezier_btn_size) {
+            /* Toggle Bezier surface display */
+            if (!show_bezier) {
+                /* Initialize and show Bezier surface windows */
+                initBezierSurface();
+                show_bezier = 1;
+                
+                /* Create Bezier surface window */
+                glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+                bezier_surface_window = glutCreateWindow("Bezier Surface");
+                glutPositionWindow(100, 100);
+                glutReshapeWindow(600, 600);
+                glEnable(GL_DEPTH_TEST);
+                glClearColor(0.0, 0.0, 0.0, 1.0);
+                glutDisplayFunc(displayBezierSurface);
+                glutReshapeFunc(reshapeBezierSurface);
+                glutMouseFunc(mouseBezierSurface);
+                glutMotionFunc(motionBezierSurface);
+                glutKeyboardFunc(keyBezierSurface);
+                
+                /* Create control window */
+                glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
+                control_window = glutCreateWindow("Bezier Surface Control");
+                glutPositionWindow(720, 100);
+                glutReshapeWindow(400, 400);
+                glClearColor(0.9, 0.9, 0.9, 1.0);
+                glutDisplayFunc(displayControlWindow);
+                glutReshapeFunc(reshapeControlWindow);
+                glutMouseFunc(mouseControlWindow);
+                glutMotionFunc(motionControlWindow);
+                glutKeyboardFunc(keyBezierSurface);
+                
+                /* Redraw main window to show button as active */
+                glutSetWindow(1); /* Main window */
+                display();
+                glFlush();
+            } else {
+                /* Close Bezier surface windows */
+                if (bezier_surface_window) {
+                    glutDestroyWindow(bezier_surface_window);
+                    bezier_surface_window = 0;
+                }
+                if (control_window) {
+                    glutDestroyWindow(control_window);
+                    control_window = 0;
+                }
+                show_bezier = 0;
+                
+                /* Redraw main window to show button as inactive */
+                glutSetWindow(1); /* Main window */
+                display();
+                glFlush();
+            }
+            return;
+        }
+        
         where = pick(x, y);
         
         /* Handle selection tool */
@@ -1787,6 +1872,54 @@ void display(void) {
     glColor3f(r, g, b);
     screen_box(12*btn_width, start_y, btn_width);
     
+    /* Bezier Surface button - in top right corner */
+    int bezier_btn_size = 80;
+    int bezier_x = ww - bezier_btn_size - 10;
+    int bezier_y = 10;
+    
+    if (show_bezier) {
+        glColor3f(0.2, 0.8, 0.2); /* Green when active */
+    } else {
+        glColor3f(0.6, 0.6, 1.0); /* Blue when inactive */
+    }
+    glBegin(GL_QUADS);
+    glVertex2i(bezier_x, wh - bezier_y);
+    glVertex2i(bezier_x + bezier_btn_size, wh - bezier_y);
+    glVertex2i(bezier_x + bezier_btn_size, wh - bezier_y - bezier_btn_size);
+    glVertex2i(bezier_x, wh - bezier_y - bezier_btn_size);
+    glEnd();
+    
+    /* Draw Bezier curve icon */
+    glColor3f(1.0, 1.0, 1.0);
+    glLineWidth(2.0);
+    glBegin(GL_LINE_STRIP);
+    for (int i = 0; i <= 20; i++) {
+        float t = (float)i / 20.0;
+        float x = bezier_x + bezier_btn_size * 0.2 + 
+                  bezier_btn_size * 0.6 * (3 * (1-t) * (1-t) * t * 0.3 + 
+                                           3 * (1-t) * t * t * 0.7 + 
+                                           t * t * t);
+        float y = wh - bezier_y - bezier_btn_size * 0.8 + 
+                  bezier_btn_size * 0.6 * (3 * (1-t) * (1-t) * t * 0.7 + 
+                                           3 * (1-t) * t * t * 0.3);
+        glVertex2f(x, y);
+    }
+    glEnd();
+    
+    /* Draw text "Bezier" */
+    glColor3f(1.0, 1.0, 1.0);
+    glRasterPos2i(bezier_x + 10, wh - bezier_y - 20);
+    const char* bezier_text = "Bezier";
+    for (int i = 0; bezier_text[i] != '\0'; i++) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, bezier_text[i]);
+    }
+    glRasterPos2i(bezier_x + 8, wh - bezier_y - 35);
+    const char* surface_text = "Surface";
+    for (int i = 0; surface_text[i] != '\0'; i++) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, surface_text[i]);
+    }
+    glLineWidth(1.0);
+    
     /* Clear status area and display status */
     glColor3f(0.8, 0.8, 0.8);
     glBegin(GL_QUADS);
@@ -1807,6 +1940,328 @@ void display(void) {
     
     glFlush();
     glPopAttrib();
+}
+
+/* Bernstein polynomial */
+float bernstein(int i, int n, float u) {
+    float binomial = 1.0;
+    for (int k = 0; k < i; k++) {
+        binomial *= (float)(n - k) / (float)(k + 1);
+    }
+    return binomial * pow(u, i) * pow(1.0 - u, n - i);
+}
+
+/* Compute point on Bezier surface */
+void computeBezierSurface(float u, float v, float* point) {
+    point[0] = point[1] = point[2] = 0.0;
+    
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            float bu = bernstein(i, 3, u);
+            float bv = bernstein(j, 3, v);
+            point[0] += controlPoints[i][j][0] * bu * bv;
+            point[1] += controlPoints[i][j][1] * bu * bv;
+            point[2] += controlPoints[i][j][2] * bu * bv;
+        }
+    }
+}
+
+/* Initialize Bezier surface control points */
+void initBezierSurface(void) {
+    /* Initialize control points in a grid */
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            controlPoints[i][j][0] = (i - 1.5) * 2.0;
+            controlPoints[i][j][1] = (j - 1.5) * 2.0;
+            controlPoints[i][j][2] = 0.0;
+        }
+    }
+    
+    /* Add some initial curvature */
+    controlPoints[1][1][2] = 1.5;
+    controlPoints[1][2][2] = 1.5;
+    controlPoints[2][1][2] = 1.5;
+    controlPoints[2][2][2] = 1.5;
+}
+
+/* Display Bezier surface */
+void displayBezierSurface(void) {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(0.0, 0.0, 15.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
+    
+    glRotatef(rotateX, 1.0, 0.0, 0.0);
+    glRotatef(rotateY, 0.0, 1.0, 0.0);
+    
+    /* Draw Bezier surface */
+    glColor3f(0.3, 0.6, 0.9);
+    int divisions = 20;
+    for (int i = 0; i < divisions; i++) {
+        glBegin(GL_QUAD_STRIP);
+        for (int j = 0; j <= divisions; j++) {
+            float u1 = (float)i / divisions;
+            float u2 = (float)(i + 1) / divisions;
+            float v = (float)j / divisions;
+            
+            float point1[3], point2[3];
+            computeBezierSurface(u1, v, point1);
+            computeBezierSurface(u2, v, point2);
+            
+            glVertex3fv(point1);
+            glVertex3fv(point2);
+        }
+        glEnd();
+    }
+    
+    /* Draw control points */
+    glPointSize(8.0);
+    glColor3f(1.0, 0.0, 0.0);
+    glBegin(GL_POINTS);
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            glVertex3fv(controlPoints[i][j]);
+        }
+    }
+    glEnd();
+    
+    /* Draw control mesh */
+    glColor3f(0.5, 0.5, 0.5);
+    glLineWidth(1.0);
+    for (int i = 0; i < 4; i++) {
+        glBegin(GL_LINE_STRIP);
+        for (int j = 0; j < 4; j++) {
+            glVertex3fv(controlPoints[i][j]);
+        }
+        glEnd();
+    }
+    for (int j = 0; j < 4; j++) {
+        glBegin(GL_LINE_STRIP);
+        for (int i = 0; i < 4; i++) {
+            glVertex3fv(controlPoints[i][j]);
+        }
+        glEnd();
+    }
+    
+    glutSwapBuffers();
+}
+
+/* Display control window */
+void displayControlWindow(void) {
+    glClear(GL_COLOR_BUFFER_BIT);
+    
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    
+    /* Draw control point grid (top view) */
+    glColor3f(0.8, 0.8, 0.8);
+    glBegin(GL_QUADS);
+    glVertex2f(-8.0, -8.0);
+    glVertex2f(8.0, -8.0);
+    glVertex2f(8.0, 8.0);
+    glVertex2f(-8.0, 8.0);
+    glEnd();
+    
+    /* Draw grid lines */
+    glColor3f(0.6, 0.6, 0.6);
+    glLineWidth(1.0);
+    for (int i = -8; i <= 8; i += 2) {
+        glBegin(GL_LINES);
+        glVertex2f(i, -8.0);
+        glVertex2f(i, 8.0);
+        glVertex2f(-8.0, i);
+        glVertex2f(8.0, i);
+        glEnd();
+    }
+    
+    /* Draw control mesh (top view projection) */
+    glColor3f(0.3, 0.3, 0.3);
+    glLineWidth(2.0);
+    for (int i = 0; i < 4; i++) {
+        glBegin(GL_LINE_STRIP);
+        for (int j = 0; j < 4; j++) {
+            glVertex2f(controlPoints[i][j][0], controlPoints[i][j][1]);
+        }
+        glEnd();
+    }
+    for (int j = 0; j < 4; j++) {
+        glBegin(GL_LINE_STRIP);
+        for (int i = 0; i < 4; i++) {
+            glVertex2f(controlPoints[i][j][0], controlPoints[i][j][1]);
+        }
+        glEnd();
+    }
+    
+    /* Draw control points */
+    glPointSize(10.0);
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            if (selectedPoint >= 0 && selectedI == i && selectedJ == j) {
+                glColor3f(1.0, 1.0, 0.0); /* Selected point in yellow */
+            } else {
+                /* Color based on Z height */
+                float z = controlPoints[i][j][2];
+                glColor3f(0.0, 0.5 + z * 0.2, 1.0 - z * 0.2);
+            }
+            glBegin(GL_POINTS);
+            glVertex2f(controlPoints[i][j][0], controlPoints[i][j][1]);
+            glEnd();
+        }
+    }
+    
+    /* Draw instructions */
+    glColor3f(0.0, 0.0, 0.0);
+    glRasterPos2f(-7.5, 7.0);
+    const char* text1 = "Drag points to adjust surface";
+    for (int i = 0; text1[i] != '\0'; i++) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, text1[i]);
+    }
+    
+    glRasterPos2f(-7.5, 6.3);
+    const char* text2 = "Use +/- keys to adjust Z height";
+    for (int i = 0; text2[i] != '\0'; i++) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, text2[i]);
+    }
+    
+    glutSwapBuffers();
+}
+
+/* Reshape Bezier surface window */
+void reshapeBezierSurface(int w, int h) {
+    glViewport(0, 0, w, h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45.0, (float)w / (float)h, 1.0, 100.0);
+    glMatrixMode(GL_MODELVIEW);
+}
+
+/* Reshape control window */
+void reshapeControlWindow(int w, int h) {
+    glViewport(0, 0, w, h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(-8.0, 8.0, -8.0, 8.0, -1.0, 1.0);
+    glMatrixMode(GL_MODELVIEW);
+}
+
+/* Mouse handler for Bezier surface window */
+void mouseBezierSurface(int button, int state, int x, int y) {
+    if (button == GLUT_LEFT_BUTTON) {
+        if (state == GLUT_DOWN) {
+            lastMouseX = x;
+            lastMouseY = y;
+        }
+    }
+}
+
+/* Motion handler for Bezier surface window */
+void motionBezierSurface(int x, int y) {
+    int dx = x - lastMouseX;
+    int dy = y - lastMouseY;
+    
+    rotateY += dx * 0.5;
+    rotateX += dy * 0.5;
+    
+    lastMouseX = x;
+    lastMouseY = y;
+    
+    glutPostRedisplay();
+}
+
+/* Mouse handler for control window */
+void mouseControlWindow(int button, int state, int x, int y) {
+    if (button == GLUT_LEFT_BUTTON) {
+        if (state == GLUT_DOWN) {
+            /* Convert screen coordinates to world coordinates */
+            int width = glutGet(GLUT_WINDOW_WIDTH);
+            int height = glutGet(GLUT_WINDOW_HEIGHT);
+            float wx = ((float)x / width) * 16.0 - 8.0;
+            float wy = 8.0 - ((float)y / height) * 16.0;
+            
+            /* Find nearest control point */
+            float minDist = 0.5;
+            selectedPoint = -1;
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 4; j++) {
+                    float dx = wx - controlPoints[i][j][0];
+                    float dy = wy - controlPoints[i][j][1];
+                    float dist = sqrt(dx * dx + dy * dy);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        selectedPoint = i * 4 + j;
+                        selectedI = i;
+                        selectedJ = j;
+                    }
+                }
+            }
+            
+            glutSetWindow(control_window);
+            glutPostRedisplay();
+        } else if (state == GLUT_UP) {
+            selectedPoint = -1;
+            glutSetWindow(control_window);
+            glutPostRedisplay();
+        }
+    }
+}
+
+/* Motion handler for control window */
+void motionControlWindow(int x, int y) {
+    if (selectedPoint >= 0) {
+        /* Convert screen coordinates to world coordinates */
+        int width = glutGet(GLUT_WINDOW_WIDTH);
+        int height = glutGet(GLUT_WINDOW_HEIGHT);
+        float wx = ((float)x / width) * 16.0 - 8.0;
+        float wy = 8.0 - ((float)y / height) * 16.0;
+        
+        /* Clamp to bounds */
+        if (wx < -8.0) wx = -8.0;
+        if (wx > 8.0) wx = 8.0;
+        if (wy < -8.0) wy = -8.0;
+        if (wy > 8.0) wy = 8.0;
+        
+        /* Update control point position */
+        controlPoints[selectedI][selectedJ][0] = wx;
+        controlPoints[selectedI][selectedJ][1] = wy;
+        
+        /* Update both windows */
+        glutSetWindow(control_window);
+        glutPostRedisplay();
+        glutSetWindow(bezier_surface_window);
+        glutPostRedisplay();
+    }
+}
+
+/* Keyboard handler for Bezier surface window */
+void keyBezierSurface(unsigned char key, int x, int y) {
+    if (key == '+' || key == '=') {
+        if (selectedPoint >= 0) {
+            controlPoints[selectedI][selectedJ][2] += 0.2;
+            glutSetWindow(control_window);
+            glutPostRedisplay();
+            glutSetWindow(bezier_surface_window);
+            glutPostRedisplay();
+        }
+    } else if (key == '-' || key == '_') {
+        if (selectedPoint >= 0) {
+            controlPoints[selectedI][selectedJ][2] -= 0.2;
+            glutSetWindow(control_window);
+            glutPostRedisplay();
+            glutSetWindow(bezier_surface_window);
+            glutPostRedisplay();
+        }
+    } else if (key == 27) { /* ESC key */
+        if (bezier_surface_window) {
+            glutDestroyWindow(bezier_surface_window);
+            bezier_surface_window = 0;
+        }
+        if (control_window) {
+            glutDestroyWindow(control_window);
+            control_window = 0;
+        }
+        show_bezier = 0;
+    }
 }
 
 /* Main function */
