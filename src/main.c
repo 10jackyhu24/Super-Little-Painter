@@ -1722,6 +1722,12 @@ void key(unsigned char k, int xx, int yy) {
 
 /* Display function - Draw toolbar */
 void display(void) {
+    /* Clear the entire screen first if Bezier is showing */
+    if (show_bezier) {
+        glClearColor(0.8, 0.8, 0.8, 1.0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
+    
     glPushAttrib(GL_ALL_ATTRIB_BITS);
     
     /* Draw toolbar background */
@@ -2037,6 +2043,7 @@ void displayBezierInMain(void) {
     gluLookAt(0.0, 0.0, 15.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
     
     glEnable(GL_DEPTH_TEST);
+    
     glRotatef(rotateX, 1.0, 0.0, 0.0);
     glRotatef(rotateY, 0.0, 1.0, 0.0);
     
@@ -2047,12 +2054,12 @@ void displayBezierInMain(void) {
     glColor3f(0.3, 0.6, 0.9);
     glLineWidth(1.0);
     
-    /* Draw surface using lines */
+    /* Draw surface as wireframe */
     for (int a = 0; a < angleDivisions; a++) {
         float angle1 = (float)a / angleDivisions * 2.0 * M_PI;
         float angle2 = (float)(a + 1) / angleDivisions * 2.0 * M_PI;
         
-        glBegin(GL_QUAD_STRIP);
+        glBegin(GL_LINE_STRIP);
         for (int p = 0; p <= profileDivisions; p++) {
             float t = (float)p / profileDivisions;
             float point[2];
@@ -2061,22 +2068,36 @@ void displayBezierInMain(void) {
             float r = point[0];  /* Radius from Y axis */
             float y = point[1];  /* Height */
             
-            /* First vertex at angle1 */
+            /* Vertex at angle1 */
             float x1 = r * cos(angle1);
             float z1 = r * sin(angle1);
             glVertex3f(x1, y, z1);
-            
-            /* Second vertex at angle2 */
-            float x2 = r * cos(angle2);
-            float z2 = r * sin(angle2);
-            glVertex3f(x2, y, z2);
+        }
+        glEnd();
+    }
+    
+    /* Draw profile rings */
+    for (int p = 0; p <= profileDivisions; p += 2) {
+        float t = (float)p / profileDivisions;
+        float point[2];
+        computeProfilePoint(t, point);
+        
+        float r = point[0];
+        float y = point[1];
+        
+        glBegin(GL_LINE_LOOP);
+        for (int a = 0; a < angleDivisions; a++) {
+            float angle = (float)a / angleDivisions * 2.0 * M_PI;
+            float x = r * cos(angle);
+            float z = r * sin(angle);
+            glVertex3f(x, y, z);
         }
         glEnd();
     }
     
     /* Draw profile curve in red */
     glColor3f(1.0, 0.0, 0.0);
-    glLineWidth(2.0);
+    glLineWidth(3.0);
     glBegin(GL_LINE_STRIP);
     for (int p = 0; p <= profileDivisions; p++) {
         float t = (float)p / profileDivisions;
@@ -2087,7 +2108,7 @@ void displayBezierInMain(void) {
     glEnd();
     
     /* Draw control points */
-    glPointSize(6.0);
+    glPointSize(8.0);
     glColor3f(1.0, 1.0, 0.0);
     glBegin(GL_POINTS);
     for (int i = 0; i < 7; i++) {
@@ -2301,7 +2322,7 @@ int main(int argc, char **argv) {
     int c_menu, p_menu, f_menu, fo_menu, t_menu;
     
     glutInit(&argc, argv);
-    glutInitDisplayMode(GLUT_SINGLE | GLUT_RGB);
+    glutInitDisplayMode(GLUT_SINGLE | GLUT_RGB | GLUT_DEPTH);  /* Add depth buffer */
     glutInitWindowSize(ww, wh);
     glutCreateWindow("Super Paint - Midterm Project");
     
